@@ -6,7 +6,7 @@
 #
 
 # C source names, if any, go here -- minus the .c
-C_PIECES=rtems-stub rtems-gdb-stub-ppc-shared
+C_PIECES=rtems-stub $(STUB_$(RTEMS_CPU))
 C_FILES=$(C_PIECES:%=%.c)
 C_O_FILES=$(C_PIECES:%=${ARCH}/%.o)
 
@@ -14,6 +14,9 @@ C_O_FILES=$(C_PIECES:%=${ARCH}/%.o)
 CC_PIECES=
 CC_FILES=$(CC_PIECES:%=%.cc)
 CC_O_FILES=$(CC_PIECES:%=${ARCH}/%.o)
+
+STUB_powerpc=rtems-gdb-stub-ppc-shared
+STUB_i386   =rtems-gdb-stub-i386
 
 H_FILES=
 
