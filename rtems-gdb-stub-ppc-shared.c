@@ -297,8 +297,8 @@ printk("\n");
 	} else {
 
 		switch_stack(&msg);
-printk("Resumed from exception; sig %i, GPR1 0x%08x PC 0x%08x LR 0x%08x\n",
-			msg.contSig, msg.frm->GPR1, msg.frm->EXC_SRR0, msg.frm->EXC_LR);
+printk("Resumed from exception; contSig %i, sig %i, GPR1 0x%08x PC 0x%08x LR 0x%08x\n",
+			msg.contSig, msg.sig, msg.frm->GPR1, msg.frm->EXC_SRR0, msg.frm->EXC_LR);
 
 		/* resuming; we might have to step over a breakpoint */
 		if ( (stepOverState.trapno = TRAPNO(*(volatile unsigned long *)f->EXC_SRR0)) >= 0 ) {

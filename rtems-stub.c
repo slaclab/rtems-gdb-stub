@@ -172,6 +172,8 @@ static inline void flushDebugChars()
 static int
 pendSomethingHappening(RtemsDebugMsg *, int, char*);
 
+static int resume_stopped_task(rtems_id tid, int sig);
+
 /************************************************************************/
 /* BUFMAX defines the maximum number of characters in inbound/outbound buffers*/
 /* at least NUMREGBYTES*2 are needed for register packets */
@@ -183,17 +185,35 @@ pendSomethingHappening(RtemsDebugMsg *, int, char*);
 #define RTEMS_GDB_Q_LEN 200
 #define RTEMS_GDB_PORT 4444
 
-#if BUFMAX < 2*NUMREGBYTES
-#  undef  BUFMAX
-#  define BUFMAX (2*NUMREGBYTES+100)
+#if (EXTRABUFSZ+15) > NUMREGBYTES
+#define CHRBUFSZ (EXTRABUFSZ+15)
+#else
+#define CHRBUFSZ NUMREGBYTES
 #endif
 
-#if BUFMAX < 2*(EXTRABUFSZ+15)
-#undef BUFMAX
-#define BUFMAX	(2*(EXTRABUFSZ+15))
+
+#if BUFMAX < 2*CHRBUFSZ + 100
+#  undef  BUFMAX
+#  define BUFMAX (2*CHRBUFSZ+100)
 #endif
 
 static volatile char initialized=0;  /* boolean flag. != 0 means we've been initialized */
+
+/* Table used by the crc32 function to calcuate the checksum. */
+/* CRC32 algorithm from GDB: gdb/remote.c (GPL!!) */
+static unsigned long crc32_table[256] =
+{0, 0};
+                                                                                                                                                         
+static unsigned long
+crc32 (unsigned char *buf, int len, unsigned int crc)
+{
+ while (len--)
+    {
+      crc = (crc << 8) ^ crc32_table[((crc >> 24) ^ *buf) & 255];
+      buf++;
+    }
+  return crc;
+}
 
 STATIC rtems_id gdb_pending_id = 0;
 
@@ -231,8 +251,14 @@ static RtemsDebugMsg getFirstMsg(int);
 /* list of threads that have stopped */
 static CdllNodeRec anchor   = { &anchor, &anchor };
 
+/* list of currently stopped threads */
+static CdllNodeRec stopped  = { &stopped, &stopped};
+
 /* list of 'dead' threads that we refuse to restart */
 static CdllNodeRec cemetery = { &cemetery, &cemetery };
+
+/* repository of free nodes */
+static CdllNodeRec freeList = { &freeList, &freeList };
 
 static RtemsDebugMsg
 threadOnListBwd(CdllNode list, rtems_id tid)
@@ -243,6 +269,29 @@ CdllNode n;
 			return (RtemsDebugMsg)n;
 	}
 	return 0;
+}
+
+static inline RtemsDebugMsg
+msgHeadDeQ(CdllNode list)
+{
+RtemsDebugMsg rval = (RtemsDebugMsg)cdll_dequeue_head(list);
+	return  &rval->node == list ? 0 : rval;
+}
+
+static RtemsDebugMsg
+msgAlloc()
+{
+RtemsDebugMsg rval = msgHeadDeQ(&freeList);
+	if ( !rval && (rval = calloc(1, sizeof(RtemsDebugMsgRec))) ) {
+		cdll_init_el(&rval->node);	
+	}
+	return rval;
+}
+
+static void
+msgFree(RtemsDebugMsg msg)
+{
+	cdll_splerge_head(&freeList, (CdllNode)msg);
 }
 
 /************* jump buffer used for setjmp/longjmp **************************/
@@ -494,6 +543,49 @@ rtems_status_code sc;
 
 }
 
+static int resume_stopped_task(rtems_id tid, int sig)
+{
+RtemsDebugMsg m;
+int rval, do_free;
+	if ( tid ) {
+		m = threadOnListBwd(&stopped, tid);
+		if ( m ) {
+			cdll_splerge_tail(&m->node, m->node.p);
+			/* see comment below why we use 'do_free' */
+			do_free = (m->frm == 0);
+			rval = task_resume(m,sig);
+			if (do_free) {
+				m->tid = 0;
+				msgFree(m);
+			}
+		} else {
+			fprintf(stderr,"Unable to resume 0x%08x -- not found on stopped list\n", tid);
+			rval = -1;
+		}
+		return rval;
+	} else {
+		rval = 0;
+		/* release all currently stopped threads */
+		while ( (m=msgHeadDeQ(&stopped)) ) {
+			do_free = (m->frm == 0);
+			/* cannot access 'msg' after resuming. If it
+			 * was a 'real', i.e., non-frameless message then
+			 * it lived on the stack of the to-be resumed
+			 * thread.
+			 */
+			if ( task_resume(m, sig) ) {
+fprintf(stderr,"Task resume %x FAILURE\n",m->tid);
+				rval = -1;
+			}
+			if ( do_free ) {
+				m->tid = 0;
+				msgFree(m);
+			}
+		}
+	}
+	return rval;
+}
+
 static void detach_all_tasks()
 {
 RtemsDebugMsg msg;
@@ -501,8 +593,13 @@ RtemsDebugMsg msg;
 	rtems_gdb_tgt_remove_all_bpnts();
 
 	/* detach all tasks */
+
+	/* collect all pending tasks */
 	while ( (msg=getFirstMsg(0)) )
-		task_resume(msg, SIGCONT);
+		;
+
+	/* and resume everything */
+	resume_stopped_task(0, SIGCONT);
 
 	rtems_gdb_break_tid = 0;
 }
@@ -599,26 +696,114 @@ static int unAttachedCmd(int ch)
            || 'q' == ch;
 }
 
+static int compileThreadExtraInfo(char *extrabuf, rtems_id tid)
+{
+Thread_Control    *thr;
+Objects_Locations l;
+States_Control    state = 0xffff;
+int               pri   = 0, i = 0;
+
+	memset(extrabuf,0,EXTRABUFSZ);
+	if ( (thr=_Thread_Get( tid, &l )) ) {
+		if ( OBJECTS_LOCAL == l ) {
+			Objects_Information *oi;
+			oi = _Objects_Get_information( tid );
+			*extrabuf = '\'';
+			if ( oi->is_string ) {
+				if ( oi->name_length < EXTRABUFSZ ) {
+					_Objects_Copy_name_string( thr->Object.name, extrabuf + 1  );
+				} else {
+					strcpy( extrabuf + 1, "NAME TOO LONG" ); 
+				}
+			} else {
+				_Objects_Copy_name_raw( &thr->Object.name, extrabuf + 1, oi->name_length );
+			}
+			state = thr->current_state;
+			pri   = thr->real_priority;
+		}
+		_Thread_Enable_dispatch();
+		if ( OBJECTS_LOCAL != l )
+			return 0;
+		i = strlen(extrabuf);
+		extrabuf[i++]='\'';
+		while (i<8)
+			extrabuf[i++]=' ';
+		i+=snprintf(extrabuf+i,EXTRABUFSZ-i,"PRI: %3d STATE:", pri);
+		state = state & STATES_ALL_SET;
+		if ( i<EXTRABUFSZ ) {
+			if ( STATES_READY == state)
+				i+=sprintf(extrabuf+i," ready");
+			else {
+			if ( STATES_DORMANT   & state && i < EXTRABUFSZ ) {
+				i+=sprintf(extrabuf+i," dorm");
+				state &= ~STATES_DORMANT;
+			}
+			if ( STATES_SUSPENDED & state && i < EXTRABUFSZ ) {
+				i+=sprintf(extrabuf+i," susp");
+				state &= ~STATES_SUSPENDED;
+			}
+			if ( STATES_TRANSIENT & state && i < EXTRABUFSZ ) {
+				i+=sprintf(extrabuf+i," trans");
+				state &= ~STATES_TRANSIENT;
+			}
+			if ( STATES_BLOCKED & state && i < EXTRABUFSZ ) {
+				i+=sprintf(extrabuf+i," BLOCKED - ");
+				if ( STATES_DELAYING  & state && i < EXTRABUFSZ )
+					i+=sprintf(extrabuf+i," delyd");
+				if ( STATES_INTERRUPTIBLE_BY_SIGNAL  & state && i < EXTRABUFSZ )
+					i+=sprintf(extrabuf+i," interruptible");
+				if ( STATES_WAITING_FOR_TIME & state && i < EXTRABUFSZ )
+						i+=sprintf(extrabuf+i," time");
+			if ( STATES_WAITING_FOR_BUFFER & state && i < EXTRABUFSZ )
+					i+=sprintf(extrabuf+i," buf");
+				if ( STATES_WAITING_FOR_SEGMENT & state && i < EXTRABUFSZ )
+					i+=sprintf(extrabuf+i," seg");
+				if ( STATES_WAITING_FOR_MESSAGE & state && i < EXTRABUFSZ )
+					i+=sprintf(extrabuf+i," msg");
+				if ( STATES_WAITING_FOR_EVENT & state && i < EXTRABUFSZ )
+					i+=sprintf(extrabuf+i," evt");
+				if ( STATES_WAITING_FOR_SEMAPHORE & state && i < EXTRABUFSZ )
+					i+=sprintf(extrabuf+i," sem");
+				if ( STATES_WAITING_FOR_MUTEX & state && i < EXTRABUFSZ )
+					i+=sprintf(extrabuf+i," mtx");
+				if ( STATES_WAITING_FOR_CONDITION_VARIABLE & state && i < EXTRABUFSZ )
+					i+=sprintf(extrabuf+i," cndv");
+				if ( STATES_WAITING_FOR_JOIN_AT_EXIT & state && i < EXTRABUFSZ )
+					i+=sprintf(extrabuf+i," join");
+				if ( STATES_WAITING_FOR_RPC_REPLY & state && i < EXTRABUFSZ )
+					i+=sprintf(extrabuf+i," rpc");
+				if ( STATES_WAITING_FOR_PERIOD & state && i < EXTRABUFSZ )
+					i+=sprintf(extrabuf+i," perio");
+				if ( STATES_WAITING_FOR_SIGNAL & state && i < EXTRABUFSZ )
+					i+=sprintf(extrabuf+i," sig");
+				state &= ~STATES_BLOCKED;
+			}
+			}
+			if ( state && i < EXTRABUFSZ ) {
+				i+=snprintf(extrabuf+i, EXTRABUFSZ-i, "?? (0x%x)", state);
+			}
+		}
+	}
+	return i;
+}
 /*
  * This function does all command processing for interfacing to gdb.
  */
 STATIC void
 rtems_gdb_daemon (rtems_task_argument arg)
 {
-  int addr, length;
   char              *ptr, *pto;
   const char        *pfrom;
-  char              *regbuf = 0;
+  char              *chrbuf = 0;
   int               sd,regno,i,j;
-  RtemsDebugMsg     msg, current = 0;
+  RtemsDebugMsg     current = 0;
   rtems_status_code sc;
-  rtems_id          *tid_tab = calloc(1,sizeof(rtems_id)), tid;
-  char				*extrabuf = malloc(EXTRABUFSZ+15);
+  rtems_id          *tid_tab = calloc(1,sizeof(rtems_id)), tid, cont_tid;
   int               tidx = 0;
   int               ehandler_installed=0;
   CexpModule		mod   = 0;
   CexpSym           *psectsyms = 0;
-
+  int				addr,len;
   /* startup / initialization */
   {
     if ( RTEMS_SUCCESSFUL !=
@@ -632,7 +817,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		rtems_error( sc, "GDBd: unable to create semaphore" );
 		goto cleanup;
 	}
-	if ( !(regbuf = malloc(NUMREGBYTES)) ) {
+	if ( !(chrbuf = malloc(CHRBUFSZ)) ) {
 		fprintf(stderr,"no memory\n");
 		goto cleanup;
 	}
@@ -704,6 +889,8 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		goto cleanup;
 	}
 
+	cont_tid = 0;
+
 	while ( (ptr = getpacket()) ) {
 
     remcomOutBuffer[0] = 0;
@@ -742,15 +929,15 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	case 'g':		/* return the value of the CPU registers */
 	  if (!havestate(current))
 		break;
-	  rtems_gdb_tgt_f2r(regbuf, current);
-	  mem2hex ((char *) regbuf, remcomOutBuffer, NUMREGBYTES);
+	  rtems_gdb_tgt_f2r(chrbuf, current);
+	  mem2hex ((char *) chrbuf, remcomOutBuffer, NUMREGBYTES);
 	  break;
 
 	case 'G':		/* set the value of the CPU registers - return OK */
 	  if (!havestate(current))
 		break;
-	  hex2mem (ptr, (char *) regbuf, NUMREGBYTES);
-	  rtems_gdb_tgt_r2f(current, regbuf);
+	  hex2mem (ptr, (char *) chrbuf, NUMREGBYTES);
+	  rtems_gdb_tgt_r2f(current, chrbuf);
 	  strcpy (remcomOutBuffer, "OK");
 	  break;
 
@@ -772,6 +959,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			 *            maybe we should globally enable breakpoints
 			 *            only when we 'continue' or 'step'
 			 */
+			cont_tid = tid;
 	  	} else if ( 'g' == *ptr ) {
 			if ( (TID_ALL == tid || TID_ANY == tid) )
 				tid = current->tid ? current->tid : dummy_tid;
@@ -809,10 +997,10 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	      /* TRY TO READ %x,%x.  IF SUCCEED, SET PTR = 0 */
 	      if (hexToInt (&ptr, &addr))
 		if (*(ptr++) == ',')
-		  if (hexToInt (&ptr, &length))
+		  if (hexToInt (&ptr, &len))
 		    {
 		      ptr = 0;
-		      mem2hex ((char *) addr, remcomOutBuffer, length);
+		      mem2hex ((char *) addr, remcomOutBuffer, len);
 		    }
 
 	      if (ptr)
@@ -835,10 +1023,10 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	      /* TRY TO WRITE '%x,%x:'.  IF SUCCEED, SET PTR = 0 */
 	      if (hexToInt (&ptr, &addr))
 		if (*(ptr++) == ',')
-		  if (hexToInt (&ptr, &length))
+		  if (hexToInt (&ptr, &len))
 		    if (*(ptr++) == ':')
 		      {
-			hex2mem (ptr, (char *) addr, length);
+			hex2mem (ptr, (char *) addr, len);
 			ptr = 0;
 			strcpy (remcomOutBuffer, "OK");
 		      }
@@ -873,8 +1061,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
 		if ( current ) {
 			tid  = current->tid;
-
-			i   = task_resume( current, contsig );
+			i   = resume_stopped_task(cont_tid, contsig);
 		} else {
 			i   = 0;
 			tid = rtems_gdb_break_tid;
@@ -887,11 +1074,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			 */
 			strcpy(remcomOutBuffer,"E0D");
 			break;
-		}
-		/* FALL THRU */
-
-
-		if ( 0 == i )
+		} else if ( 0 == i )
 			current = 0;
 
 		if ( pendSomethingHappening(&current, tid, remcomOutBuffer) < 0 )
@@ -908,15 +1091,28 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		  || (i = rtems_gdb_tgt_regoff(regno, &j)) < 0 )
 		break;
 		
-	  rtems_gdb_tgt_f2r((char*)regbuf,current);
-	  hex2mem (ptr, ((char*)regbuf) + j, i);
-	  rtems_gdb_tgt_r2f(current, regbuf);
+	  rtems_gdb_tgt_f2r((char*)chrbuf,current);
+	  hex2mem (ptr, ((char*)chrbuf) + j, i);
+	  rtems_gdb_tgt_r2f(current, chrbuf);
 	  strcpy (remcomOutBuffer, "OK");
 	  break;
 
 	case 'q':
       if ( !strcmp(ptr,"Offsets") ) {
-		/* ignore; use values from file */
+		/* ignore; GDB should use values from executable file */
+	  } else if ( !strncmp(ptr,"CRC:",4) ) {
+		ptr+=4;
+		if ( !hexToInt(&ptr,&addr) || ','!=*ptr++ || !hexToInt(&ptr,&len) ) {
+			strcpy(remcomOutBuffer,"E0D");
+		} else {
+			if ( 0 == setjmp(remcomEnv) ) {
+				/* try to compute crc */
+				sprintf(remcomOutBuffer,"C%x",crc32((char*)addr, len, -1));
+			} else {
+	      		strcpy (remcomOutBuffer, "E03");
+	      		debug_error ("%s\n","bus error");
+			}
+		}
 	  } else if ( !strcmp(ptr+1,"ThreadInfo") ) {
 		if ( 'f' == *ptr ) {
 			tidx = 0;
@@ -937,95 +1133,10 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	  } else if ( !strncmp(ptr,"ThreadExtraInfo",15) ) {
 		ptr+=15;
 		if ( ','== *ptr ) {
-			Thread_Control    *thr;
-			Objects_Locations l;
-			States_Control    state = 0xffff;
-			int               pri   = 0;
 			tid = strtol(++ptr,0,16);
-			memset(extrabuf,0,EXTRABUFSZ);
-			if ( (thr=_Thread_Get( tid, &l )) ) {
-				if ( OBJECTS_LOCAL == l ) {
-					Objects_Information *oi;
-					oi = _Objects_Get_information( tid );
-					*extrabuf = '\'';
-					if ( oi->is_string ) {
-						if ( oi->name_length < EXTRABUFSZ ) {
-							_Objects_Copy_name_string( thr->Object.name, extrabuf + 1  );
-						} else {
-							strcpy( extrabuf + 1, "NAME TOO LONG" ); 
-						}
-					} else {
-						_Objects_Copy_name_raw( &thr->Object.name, extrabuf + 1, oi->name_length );
-					}
-					state = thr->current_state;
-					pri   = thr->real_priority;
-				}
-				_Thread_Enable_dispatch();
-				if ( OBJECTS_LOCAL != l )
-					break;
-				i = strlen(extrabuf);
-				extrabuf[i++]='\'';
-				while (i<8)
-					extrabuf[i++]=' ';
-				i+=snprintf(extrabuf+i,EXTRABUFSZ-i,"PRI: %3d STATE:", pri);
-				state = state & STATES_ALL_SET;
-				if ( i<EXTRABUFSZ ) {
-					if ( STATES_READY == state)
-						i+=sprintf(extrabuf+i," ready");
-					else {
-					if ( STATES_DORMANT   & state && i < EXTRABUFSZ ) {
-						i+=sprintf(extrabuf+i," dorm");
-						state &= ~STATES_DORMANT;
-					}
-					if ( STATES_SUSPENDED & state && i < EXTRABUFSZ ) {
-						i+=sprintf(extrabuf+i," susp");
-						state &= ~STATES_SUSPENDED;
-					}
-					if ( STATES_TRANSIENT & state && i < EXTRABUFSZ ) {
-						i+=sprintf(extrabuf+i," trans");
-						state &= ~STATES_TRANSIENT;
-					}
-					if ( STATES_BLOCKED & state && i < EXTRABUFSZ ) {
-						i+=sprintf(extrabuf+i," BLOCKED - ");
-						if ( STATES_DELAYING  & state && i < EXTRABUFSZ )
-							i+=sprintf(extrabuf+i," delyd");
-						if ( STATES_INTERRUPTIBLE_BY_SIGNAL  & state && i < EXTRABUFSZ )
-							i+=sprintf(extrabuf+i," interruptible");
-						if ( STATES_WAITING_FOR_TIME & state && i < EXTRABUFSZ )
-							i+=sprintf(extrabuf+i," time");
-						if ( STATES_WAITING_FOR_BUFFER & state && i < EXTRABUFSZ )
-							i+=sprintf(extrabuf+i," buf");
-
-						if ( STATES_WAITING_FOR_SEGMENT & state && i < EXTRABUFSZ )
-							i+=sprintf(extrabuf+i," seg");
-						if ( STATES_WAITING_FOR_MESSAGE & state && i < EXTRABUFSZ )
-							i+=sprintf(extrabuf+i," msg");
-						if ( STATES_WAITING_FOR_EVENT & state && i < EXTRABUFSZ )
-							i+=sprintf(extrabuf+i," evt");
-						if ( STATES_WAITING_FOR_SEMAPHORE & state && i < EXTRABUFSZ )
-							i+=sprintf(extrabuf+i," sem");
-						if ( STATES_WAITING_FOR_MUTEX & state && i < EXTRABUFSZ )
-							i+=sprintf(extrabuf+i," mtx");
-						if ( STATES_WAITING_FOR_CONDITION_VARIABLE & state && i < EXTRABUFSZ )
-							i+=sprintf(extrabuf+i," cndv");
-						if ( STATES_WAITING_FOR_JOIN_AT_EXIT & state && i < EXTRABUFSZ )
-							i+=sprintf(extrabuf+i," join");
-						if ( STATES_WAITING_FOR_RPC_REPLY & state && i < EXTRABUFSZ )
-							i+=sprintf(extrabuf+i," rpc");
-						if ( STATES_WAITING_FOR_PERIOD & state && i < EXTRABUFSZ )
-							i+=sprintf(extrabuf+i," perio");
-						if ( STATES_WAITING_FOR_SIGNAL & state && i < EXTRABUFSZ )
-							i+=sprintf(extrabuf+i," sig");
-						state &= ~STATES_BLOCKED;
-					}
-					}
-					if ( state && i < EXTRABUFSZ ) {
-						i+=snprintf(extrabuf+i, EXTRABUFSZ-i, "?? (0x%x)", state);
-					}
-				}
-			}
-			if (*extrabuf)
-	  			mem2hex (extrabuf, remcomOutBuffer, i+1);
+			i = compileThreadExtraInfo(chrbuf, tid);
+			if (*chrbuf)
+	  			mem2hex (chrbuf, remcomOutBuffer, i+1);
 		}
 	  } else if ( !strcmp(ptr+1,"CexpFileList") ) {
 	    if ( 'f' == *ptr ) {
@@ -1099,7 +1210,6 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	  case 'z':
 	  case 'Z':
 		{
-		int addr,len;
 		char *op = ptr++-1;
 		if (   ',' != *ptr++ || !hexToInt(&ptr,&addr)
             || ',' != *ptr++ || !hexToInt(&ptr,&len) 
@@ -1134,8 +1244,10 @@ rtems_gdb_daemon (rtems_task_argument arg)
   } /* interpreter loop */
 release_connection:
   /* make sure attached thread continues */
+#ifdef OBSOLETE
   if ( current )
   	task_resume( current, SIGCONT );
+#endif
   cleanup_connection();
 
   }
@@ -1156,9 +1268,8 @@ cleanup:
   if ( 0 <= rtems_gdb_sd ) {
     close(rtems_gdb_sd);
   }
-  free( regbuf );
+  free( chrbuf );
   free( tid_tab );
-  free( extrabuf );
 
   rtems_gdb_tid=0;
   rtems_task_delete(RTEMS_SELF);
@@ -1241,7 +1352,7 @@ rtems_debug_start(int pri)
 {
 
 	rtems_gdb_tid = thread_helper("GDBd", 20, 20000+RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, 0);
-#if 0
+#if 1
 	thread_helper("blah", 200, RTEMS_MINIMUM_STACK_SIZE, blah, 0);
 #endif
 
@@ -1251,10 +1362,14 @@ rtems_debug_start(int pri)
 int
 _cexpModuleFinalize(void *h)
 {
+RtemsDebugMsg n;
 	if ( rtems_gdb_tid ) {
 		fprintf(stderr,"GDB daemon still running; refuse to unload\n");
 		return -1;
 	}
+	
+	while ( (n = msgHeadDeQ(&freeList)) )
+		free(n);
 	return 0;
 }
 
@@ -1264,9 +1379,22 @@ struct sockaddr_in blahaddr = {0};
 void
 _cexpModuleInitialize(void *h)
 {
-      blahaddr.sin_family = AF_INET;
-      blahaddr.sin_port   = htons(RTEMS_GDB_PORT);
-	  rtems_debug_start(40);
+    blahaddr.sin_family = AF_INET;
+    blahaddr.sin_port   = htons(RTEMS_GDB_PORT);
+
+    {
+      /* Initialize the CRC table and the decoding table. */
+	int i, j;
+	unsigned int c;
+                                                                                                                                                         
+	for (i = 0; i < 256; i++) {
+		for (c = i << 24, j = 8; j > 0; --j)
+			c = c & 0x80000000 ? (c << 1) ^ 0x04c11db7 : (c << 1);
+		crc32_table[i] = c;
+	}
+    }
+
+ 	rtems_debug_start(40);
 }
 
 void
@@ -1295,12 +1423,14 @@ rtems_status_code sc = -1;
 	if ( msg->tid ) {
 
 		/* never really resume the dummy tid */
-		if (   msg->tid == dummy_tid ) {
+		if ( msg->tid == dummy_tid ) {
 		    if ( dummy_frame_pc == rtems_gdb_tgt_get_pc( msg ) ) {
 				theDummy = msg;
 				return 0;
 			} else {
 				theDummy = 0;
+fprintf(stderr,"STARTING DUMMY with sig %i\n",msg->sig);
+				msg->sig = SIGTRAP;
 			}
 		}
 		/* if we attached to an already sleeping thread, don't resume
@@ -1345,27 +1475,31 @@ printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
 	if ( cur ) {
 		if ( cur->tid == new_tid )
 			return cur;
+#ifdef OBSOLETE
 		task_resume(cur, SIGCONT);
+#endif
 	}
 
 	if ( new_tid == dummy_tid && theDummy ) {
-		return theDummy;
+		cur = theDummy;
+		if ( ! threadOnListBwd(&stopped, new_tid) ) {
+			cdll_splerge_head(&stopped, (CdllNode)cur);
+		}
+		return cur;
 	}
 
+#ifdef OBSOLETE
 	cur = &currentEl;
 
 	memset(cur, 0, sizeof(*cur));
 	cdll_init_el(&cur->node);
 
 	cur->tid = new_tid;
+#endif
 
 	if ( new_tid ) {
 		rtems_status_code sc;
 		switch ( (sc = rtems_task_suspend( new_tid )) ) {
-			case RTEMS_SUCCESSFUL:
-				cur->sig = SIGINT;
-				break;
-
 			case RTEMS_ALREADY_SUSPENDED:
 				/* Hmm - could be that this is a task that is in
 				 * the list somewhere.
@@ -1378,7 +1512,6 @@ printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
 				 */
 				{
 				RtemsDebugMsg t;
-					cur->sig = SIGSTOP;
 					if ( (t = threadOnListBwd(&anchor, new_tid)) ) {
 						unsigned long flags;
 						/* found; dequeue and return */
@@ -1388,11 +1521,28 @@ printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
 						assert( RTEMS_SUCCESSFUL == rtems_semaphore_obtain( gdb_pending_id, RTEMS_NO_WAIT, RTEMS_NO_TIMEOUT ) );
 						SEMA_DEC();
 						cur = t;
+						break;
 					} else if ( ( t = threadOnListBwd(&cemetery, new_tid) ) ) {
 						cur = t;
+						break;
+					} else if ( ( t = threadOnListBwd(&stopped, new_tid) ) ) {
+						cur = t;
+						break;
+					} else {
+						/* hit an already suspended thread
+						 * FALL THROUGH and get a new (frameless) node
+						 */
 					}
 				}
+				/* FALL THRU */
+
+			case RTEMS_SUCCESSFUL:
+				/* We just stopped this thread */
+				cur = msgAlloc();
+				cur->sig = SIGINT;
+				cur->tid = new_tid;
 				break;
+
 				
 			default:
 				cur->tid = 0;
@@ -1406,6 +1556,13 @@ printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
 		assert( !theDummy );
 		theDummy = cur;
 	}
+	/* bring to head of stopped list */
+	if ( threadOnListBwd(&stopped, cur->tid) ) {
+		/* remove */
+		cdll_splerge_tail(&cur->node, cur->node.p);
+	}
+	/* add to head */
+	cdll_splerge_head(&stopped, (CdllNode)cur);
 return cur;
 }
 
@@ -1415,6 +1572,7 @@ void rtems_debug_notify_and_suspend(RtemsDebugMsg msg)
 	cdll_init_el(&msg->node);
 
 #ifndef ONETHREAD_TEST
+printk("NOTIFY with sig %i\n",msg->sig);
 	if ( SIGCHLD == msg->sig ) {
 		if ( rtems_gdb_break_tid && rtems_gdb_break_tid != msg->tid ) {
 		/* breakpoint hit; only stop if thread matches */
@@ -1469,7 +1627,7 @@ void rtems_debug_notify_and_suspend(RtemsDebugMsg msg)
 
 static RtemsDebugMsg getFirstMsg(int block)
 {
-CdllNode			msg;
+RtemsDebugMsg		msg;
 unsigned long		flags;
 rtems_status_code	sc;
 
@@ -1485,22 +1643,23 @@ rtems_status_code	sc;
 	}
 
 	rtems_interrupt_disable(flags);
-	msg = cdll_dequeue_head(&anchor);
+	msg = msgHeadDeQ(&anchor);
 	rtems_interrupt_enable(flags);
 
-	if ( msg == &anchor ) {
+	if ( !msg )
 		return 0;
-	}
 
 	if ( !block ) {
 		assert( RTEMS_SUCCESSFUL == rtems_semaphore_obtain( gdb_pending_id, RTEMS_NO_WAIT, RTEMS_NO_TIMEOUT) );
 		SEMA_DEC();
 	}
-	if ( ((RtemsDebugMsg)msg)->tid == dummy_tid ) {
+	if ( msg->tid == dummy_tid ) {
 		assert( !theDummy );
-		theDummy = (RtemsDebugMsg)msg;
+		theDummy = msg;
 	}
-	return (RtemsDebugMsg)msg;
+	assert( ! threadOnListBwd(&stopped, msg->tid) );
+	cdll_splerge_head(&stopped, &msg->node);
+	return msg;
 }
 
 /* obtain the TCB of a thread.
@@ -1584,6 +1743,10 @@ RtemsDebugMsg msg;
 	}
 		/* another thread got a signal */
   } while ( !*pcurrent );
+  if ( !threadOnListBwd(&stopped, (*pcurrent)->tid ) ) {
+	fprintf(stderr,"OOPS: msg %x, tid %x stoppedp %x\n",msg,(*pcurrent)->tid, stopped.p);
+  }
+  assert( threadOnListBwd(&stopped, (*pcurrent)->tid) );
   sprintf(buf,"T%02xthread:%08x;",(*pcurrent)->sig, (*pcurrent)->tid);
 return 0;
 }
