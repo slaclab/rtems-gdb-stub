@@ -664,8 +664,10 @@ rtems_gdb_daemon (rtems_task_argument arg)
   rtems_id          *tid_tab = calloc(1,sizeof(rtems_id)), tid, cont_tid;
   int               tidx = 0;
   int               ehandler_installed=0;
+#ifdef HAVE_CEXP
   CexpModule		mod   = 0;
   CexpSym           *psectsyms = 0;
+#endif
   int				addr,len;
   /* startup / initialization */
   {
@@ -858,6 +860,9 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	  }
     break;
 
+	case 'k': /* NOOP */
+	  break;
+
 	  /* m<addr>,<len>  --  read <len> bytes at <addr> */
 	case 'm':
 		if (   !hex2int(&ptr, &addr)
@@ -1007,11 +1012,12 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			if (*chrbuf)
 	  			mem2hex (chrbuf, remcomOutBuffer, i+1);
 		}
+#ifdef HAVE_CEXP
 	  } else if ( !strcmp(ptr+1,"CexpFileList") ) {
-	    if ( 'f' == *ptr ) {
+		  if ( 'f' == *ptr ) {
 			mod = cexpSystemModule->next;
-		}
-		if ( mod ) {
+		  }
+		  if ( mod ) {
 			pto    = remcomOutBuffer;
 			*pto++ = 'm';
 			pto    = int2hex(mod->text_vma, pto); 
@@ -1025,12 +1031,12 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			else
 				strcpy(pto,pfrom);
 			mod = mod->next;
-		} else {
+		  } else {
 			strcpy(remcomOutBuffer,"l");
-		}
+		  }
 #define SECTLIST_STR "CexpSectionList"
-	  } else if ( !strncmp(ptr+1,SECTLIST_STR,strlen(SECTLIST_STR)) ) {
-	    if ( 'f' == *ptr ) {
+	    } else if ( !strncmp(ptr+1,SECTLIST_STR,strlen(SECTLIST_STR)) ) {
+	      if ( 'f' == *ptr ) {
 			ptr+=1+strlen(SECTLIST_STR);
 			psectsyms = 0;
 			if ( ',' != *ptr || !*(ptr+1) ) {
@@ -1045,8 +1051,8 @@ rtems_gdb_daemon (rtems_task_argument arg)
 					mod = 0;
 				}
 			}
-		}
-		if ( psectsyms && *psectsyms ) {
+		  }
+		  if ( psectsyms && *psectsyms ) {
 			pto    = remcomOutBuffer;
 			*pto++ = 'm';
 			pto    = int2hex((int)(*psectsyms)->value.ptv, pto); 
@@ -1057,10 +1063,37 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			else
 				strcpy(pto,pfrom);
 			psectsyms++;
-		} else {
+		  } else {
 			strcpy(remcomOutBuffer,"l");
+		  }
+	    } else if ( !strncmp(ptr+4,"Load,",5) || !strncmp(ptr+4,"Unld,",5) ) {
+		  int unload = 'U' == *(ptr+4);
+		  ptr += 9;
+		  if ( (pto = strrchr(ptr,'/')) )
+			pto++;
+		  /* try to find the module; use full path and filename only */
+		  if (   ! (mod = cexpModuleFindByName(ptr, CEXP_FILE_QUIET))
+			  && ( !pto || ! (mod = cexpModuleFindByName(pto, CEXP_FILE_QUIET)) ) ) {
+			if (unload) {
+				/* that's it -- an error */
+				strcpy(remcomOutBuffer,"E02");
+				break;
+			}
+		  } else {
+			if ( cexpModuleUnload(mod) ) {
+				strcpy(remcomOutBuffer,"E10"); /* busy */
+				break;
+			}
+			/* successfully unloaded */
+		  }
+		  /* successfully unloaded or was never loaded */
+		  if ( !unload && !cexpModuleLoad(ptr,0) && (!pto || !cexpModuleLoad(pto,0)) ) {
+			strcpy(remcomOutBuffer,"E02");
+			break;
+		  }
+		  strcpy(remcomOutBuffer,"OK");
 		}
-	  }
+#endif
 
 	  break;
 
@@ -1377,18 +1410,8 @@ task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 
 	if ( new_tid == dummy_tid && theDummy ) {
 		cur = theDummy;
-		if ( ! threadOnListBwd(&stopped, new_tid) ) {
-			if ( rtems_remote_debug & DEBUG_SLIST ) {
-				fprintf(stderr,"stopped list: adding %x to head\n", cur->tid);
-				assert(cur->node.p == cur->node.n && cur->node.n == &cur->node);
-			}
-
-			cdll_splerge_head(&stopped, (CdllNode)cur);
-		}
-		return cur;
-	}
-
-	if ( new_tid ) {
+		theDummy = 0;
+	} else if ( new_tid ) {
 		rtems_status_code sc;
 		switch ( (sc = rtems_task_suspend( new_tid )) ) {
 			case RTEMS_ALREADY_SUSPENDED:
@@ -1649,20 +1672,31 @@ RtemsDebugMsg msg;
 			printf("net event\n");
 			/* should be '\003' */
 			getDebugChar();
+#if 0
 			/* stop the current thread */
+#else
+			/* GDB seems to switch to the 'last stopped'
+			 * thread which can be annoying. For now,
+			 * we just switch always to the dummy tid
+			 */
+			tid = dummy_tid;
+#endif
 			if ( !tid ) {
 				/* nothing attached yet */
 				strcpy(buf,"X03");
 				return 1;
 			}
-  			*pcurrent = task_switch_to(*pcurrent, tid);
 			(*pcurrent)->sig = SIGINT;
 		}
 		/* else
 		 * couldn't restart the thread. It's dead
 		 * or was already suspended; since there were
 		 * no messages pending, we return the old signal status
+		 *
+		 * nevertheless, we call 'task_switch_to()' to make
+		 * sure 'tid' is on the stopped list...
 		 */
+  		*pcurrent = task_switch_to(*pcurrent, tid);
 	}
 		/* another thread got a signal */
   } while ( !*pcurrent );
