@@ -16,6 +16,10 @@
 #include <signal.h>
 #include <assert.h>
 
+#ifdef HAVE_LIBBSPEXT
+#include <bsp/bspExt.h>
+#endif
+
 
 #define get_tcb(tid) rtems_gdb_get_tcb_dispatch_off(tid)
 
@@ -176,10 +180,8 @@ Thread_Control *tcb = 0;
 
 }
 
-static void (*origHandler)()=0;
-
-static void
-exception_handler(BSP_Exception_frame *f)
+static inline int
+exception_handler(BSP_Exception_frame *f, void *unused)
 {
 static struct {
 	int 			trapno;
@@ -192,8 +194,7 @@ RtemsDebugMsgRec msg;
 	    || !_Thread_Executing 
 		|| (RTEMS_SUCCESSFUL!=rtems_task_ident(RTEMS_SELF,RTEMS_LOCAL, &msg.tid)) ) {
 		/* unable to deal with this situation */
-		origHandler(f);
-		return;
+		return -1;
 	}
 
 if ( rtems_remote_debug & DEBUG_SCHED ) {
@@ -259,7 +260,7 @@ printk("\n");
 
 				if ( SIGCONT == msg.contSig ) {
 					/* we are DONE and let the thread resume */
-					return;
+					return 0;
 				}
 			}
 			/* in any case, we should switch SE off now.
@@ -283,8 +284,7 @@ printk("\n");
 	}
 
 	if ( rtems_gdb_notify_and_suspend(&msg) ) {
-		origHandler(f);
-		return;
+		return -1;
 	}
 
 if ( rtems_remote_debug & DEBUG_SCHED ) {
@@ -318,33 +318,52 @@ printk("Resumed from exception; contSig %i, sig %i, GPR1 0x%08x PC 0x%08x LR 0x%
 	} else {
 		stepOverState.sig = 0;
 	}
+	return 0;
 }
+
+#ifndef HAVE_LIBBSPEXT
+static void (*origHandler)()=0;
+
+static void ehWrap(BSP_Exception_frame *f)
+{
+	if ( exception_handler(f,0) )
+		origHandler();
+}
+#endif
 
 
 int
 rtems_gdb_tgt_install_ehandler(int action)
 {
 int rval = 0;
+#ifndef HAVE_LIBBSPEXT
 rtems_unsigned32 flags;
 
 	rtems_interrupt_disable(flags);
 	if ( action ) {
 		/* install */
-		if ( globalExceptHdl == exception_handler ) {
+		if ( globalExceptHdl == ehWrap ) {
 			rval = -1;
 		} else {
 			origHandler     = globalExceptHdl;
-			globalExceptHdl = exception_handler;
+			globalExceptHdl = ehWrap;
 		}
 	} else {
 		/* uninstall */
-		if ( globalExceptHdl != exception_handler ) {
+		if ( globalExceptHdl != ehWrap ) {
 			rval = -1;
 		} else {
 			globalExceptHdl = origHandler;
 		}
 	}
 	rtems_interrupt_enable(flags);
+#else
+	if ( action ) {
+		rval = bspExtInstallEHandler( exception_handler, 0, 1 /* head */ );
+	} else {
+		rval = bspExtRemoveEHandler( exception_handler, 0 );
+	}
+#endif
 	if ( rval ) {
 		if (action)
 			fprintf(stderr,"ERROR: exception handler already installed\n");
@@ -458,5 +477,5 @@ unsigned long lr;
 	asm volatile("mr %0, 1; mflr %1":"=r"(sp),"=r"(lr));
 	printf("LR 0x%08x; SP 0x%08x; *SP 0x%08x; **SP 0x%08x\n",
 		lr, sp, sp->up, sp->up->up);
-	return sp;
+	return (int)sp;
 }
