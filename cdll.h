@@ -111,7 +111,7 @@ register CdllNode b = a->n;
 	return b;
 }
 
-static inline cdll_init_el(CdllNode el)
+static inline void cdll_init_el(CdllNode el)
 {
 	el->p = el->n = el;
 }

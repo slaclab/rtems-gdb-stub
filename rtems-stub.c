@@ -108,6 +108,7 @@
 #define __RTEMS_VIOLATE_KERNEL_VISIBILITY__
 #include <rtems.h>
 #include <rtems/error.h>
+#include <rtems/bspIo.h>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -118,6 +119,7 @@
 #include <setjmp.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <assert.h>
 
 #define HAVE_CEXP
 
@@ -143,12 +145,17 @@
 #define TID_ANY ((rtems_id)0)
 #define TID_ALL ((rtems_id)-1)
 
+#define GDB_KILL_EVENT RTEMS_EVENT_0
+#define GDB_NET_EVENT  RTEMS_EVENT_1
+#define GDB_SIG_EVENT  RTEMS_EVENT_2
+
 /************************************************************************
  *
  * external low-level support routines 
  */
 
 static   FILE *rtems_gdb_strm = 0;
+
 /* write a single character      */
 static inline void putDebugChar(int ch)
 {
@@ -195,8 +202,32 @@ static const char hexchars[]="0123456789abcdef";
 static rtems_id
 thread_helper(char *nm, int pri, int stack, void (*fn)(rtems_task_argument), rtems_task_argument arg);
 
-static void
+static RtemsDebugMsg
 task_switch_to(RtemsDebugMsg m, rtems_id new_tid);
+
+static int
+task_resume(RtemsDebugMsg m, int sig);
+
+static RtemsDebugMsg getFirstMsg();
+
+/* list of threads that have stopped */
+static CdllNodeRec anchor   = { &anchor, &anchor };
+
+/* list of 'dead' threads that we refuse to restart */
+static CdllNodeRec cemetery = { &cemetery, &cemetery };
+
+#define ANCHOR ((RtemsDebugMsg)&anchor)
+
+static RtemsDebugMsg
+threadOnListBwd(CdllNode list, rtems_id tid)
+{
+CdllNode n;
+	for ( n = list->p; n != list; n = n->p ) {
+		if ( ((RtemsDebugMsg)n)->tid == tid )
+			return (RtemsDebugMsg)n;
+	}
+	return 0;
+}
 
 /************* jump buffer used for setjmp/longjmp **************************/
 STATIC jmp_buf remcomEnv;
@@ -219,7 +250,7 @@ STATIC char remcomOutBuffer[BUFMAX];
 
 /* scan for the sequence $<data>#<checksum>     */
 #define GETCHAR() \
-	  do { if ( (ch = getDebugChar()) < 0 ) return 0; }  while (0)
+	  do { if ( (ch = getDebugChar()) <= 0 ) return 0; }  while (0)
 
 STATIC unsigned char *
 getpacket (void)
@@ -299,7 +330,7 @@ getpacket (void)
 
 /* send the packet in buffer. */
 
-STATIC void
+STATIC int
 putpacket (buffer)
      char *buffer;
 {
@@ -330,8 +361,8 @@ putpacket (buffer)
 
 
 	  count = getDebugChar();
-  } while ( count >= 0 && count != '+');
-
+  } while ( count > 0 && count != '+');
+  return count <= 0;
 }
 
 STATIC void
@@ -399,94 +430,6 @@ hex2mem (buf, mem, count)
   return (mem);
 }
 
-/* this function takes the 68000 exception number and attempts to 
-   translate this number into a unix compatible signal value */
-STATIC int
-computeSignal (exceptionVector)
-     int exceptionVector;
-{
-  int sigval;
-  switch (exceptionVector)
-    {
-    case 2:
-      sigval = 10;
-      break;			/* bus error           */
-    case 3:
-      sigval = 10;
-      break;			/* address error       */
-    case 4:
-      sigval = 4;
-      break;			/* illegal instruction */
-    case 5:
-      sigval = 8;
-      break;			/* zero divide         */
-    case 6:
-      sigval = 8;
-      break;			/* chk instruction     */
-    case 7:
-      sigval = 8;
-      break;			/* trapv instruction   */
-    case 8:
-      sigval = 11;
-      break;			/* privilege violation */
-    case 9:
-      sigval = 5;
-      break;			/* trace trap          */
-    case 10:
-      sigval = 4;
-      break;			/* line 1010 emulator  */
-    case 11:
-      sigval = 4;
-      break;			/* line 1111 emulator  */
-
-      /* Coprocessor protocol violation.  Using a standard MMU or FPU
-         this cannot be triggered by software.  Call it a SIGBUS.  */
-    case 13:
-      sigval = 10;
-      break;
-
-    case 31:
-      sigval = 2;
-      break;			/* interrupt           */
-    case 33:
-      sigval = 5;
-      break;			/* breakpoint          */
-
-      /* This is a trap #8 instruction.  Apparently it is someone's software
-         convention for some sort of SIGFPE condition.  Whose?  How many
-         people are being screwed by having this code the way it is?
-         Is there a clean solution?  */
-    case 40:
-      sigval = 8;
-      break;			/* floating point err  */
-
-    case 48:
-      sigval = 8;
-      break;			/* floating point err  */
-    case 49:
-      sigval = 8;
-      break;			/* floating point err  */
-    case 50:
-      sigval = 8;
-      break;			/* zero divide         */
-    case 51:
-      sigval = 8;
-      break;			/* underflow           */
-    case 52:
-      sigval = 8;
-      break;			/* operand error       */
-    case 53:
-      sigval = 8;
-      break;			/* overflow            */
-    case 54:
-      sigval = 8;
-      break;			/* NAN                 */
-    default:
-      sigval = 7;		/* "software generated" */
-    }
-  return (sigval);
-}
-
 /**********************************************/
 /* WHILE WE FIND NICE HEX CHARS, BUILD AN INT */
 /* RETURN NUMBER OF CHARS PROCESSED           */
@@ -516,22 +459,15 @@ hexToInt (char **ptr, int *intValue)
   return (numChars);
 }
 
-volatile rtems_id  rtems_gdb_q    = 0;
 volatile rtems_id  rtems_gdb_tid  = 0;
 volatile int       rtems_gdb_sd   = -1;
 
 static void sowake(struct socket *so, caddr_t arg)
 {
-char ch;
 rtems_status_code sc;
-	printk("..SOWAKE..\n");
-	ch = GDB_NET;
-	sc = rtems_event_send(rtems_gdb_tid, GDB_NET_EVENT);
-	if ( RTEMS_SUCCESSFUL != sc )
-		printk("SOWAKE sc %i\n",sc);
-/*
-	rtems_message_queue_urgent(rtems_gdb_q, &ch, sizeof(ch));
-*/
+	if ( *(int*)arg ) {
+		sc = rtems_event_send(rtems_gdb_tid, GDB_NET_EVENT);
+	}
 }
 
 static void cleanup_connection()
@@ -602,32 +538,37 @@ static void
 dummy_thread(rtems_task_argument arg)
 {
 	while (1) {
+#ifdef DUMMY_SUSPENDED
 		rtems_task_suspend(RTEMS_SELF);
+#else
+		asm("sc");
+#endif
 		sleep(1);
 	}
 }
 
+static  RtemsDebugMsgRec  currentEl = {{&currentEl.node,&currentEl.node},0};
 /*
  * This function does all command processing for interfacing to gdb.
  */
 STATIC void
 rtems_gdb_daemon (rtems_task_argument arg)
 {
-  int stepping;
   int addr, length;
   char              *ptr, *pto;
   const char        *pfrom;
   char              *regbuf = 0;
   int               sd,regno,i,j;
-  RtemsDebugMsgRec  msg = {0}, current = {0};
-  int               msgsize;
+  RtemsDebugMsg     msg, current = &currentEl;
   rtems_status_code sc;
-  rtems_id          *tid_tab = calloc(1,sizeof(rtems_id));
+  rtems_id          *tid_tab = calloc(1,sizeof(rtems_id)), tid;
   int               tidx = 0;
   rtems_id          dummy_tid = 0;
   int               ehandler_installed=0;
   CexpModule		mod   = 0;
   CexpSym           *psectsyms = 0;
+  volatile int      waiting = 0;
+  rtems_event_set   evs = 0;
 
   /* startup / initialization */
   {
@@ -635,15 +576,6 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		fprintf(stderr,"no memory\n");
 		goto cleanup;
 	}
-	/* create message queue */
-	if ( RTEMS_SUCCESSFUL !=
-	     rtems_message_queue_create(
-			rtems_build_name('G','D','B','Q'),
-			RTEMS_GDB_Q_LEN,
-			sizeof(RtemsDebugMsgRec),
-			RTEMS_DEFAULT_ATTRIBUTES,
-			&rtems_gdb_q) )
-		goto cleanup;
 
     /* create socket */
     rtems_gdb_sd = socket(PF_INET, SOCK_STREAM, 0);
@@ -654,13 +586,9 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	{
     int                arg = 1;
     struct sockaddr_in srv; 
-    struct sockwakeup  wkup;
 
       setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_KEEPALIVE, &arg, sizeof(arg));
       setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_REUSEADDR, &arg, sizeof(arg));
-      wkup.sw_pfn = sowake;
-      wkup.sw_arg = 0;
-      setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_RCVWAKEUP, &wkup, sizeof(wkup));
 
       memset(&srv, 0, sizeof(srv));
       srv.sin_family = AF_INET;
@@ -684,16 +612,27 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
   initialized = 1;
 
-  while (1) {
-	if ( rtems_gdb_strm )
-		fclose(rtems_gdb_strm);
+  /* synchronize with the dummy thread */
+  rtems_event_receive(GDB_KILL_EVENT|GDB_SIG_EVENT, RTEMS_EVENT_ANY | RTEMS_WAIT, RTEMS_NO_TIMEOUT, &evs);
+
+  if (GDB_KILL_EVENT & evs)
+	goto release_connection;
+
+  if ( ! (current = getFirstMsg()) )
+	current = &currentEl;
+
+  do {
 	{
 	struct sockaddr_in a;
+    struct sockwakeup  wkup;
 	size_t             a_s = sizeof(a);
 	if ( (sd = accept(rtems_gdb_sd, (struct sockaddr *)&a, &a_s)) < 0 ) {
 		perror("GDB daemon: accept");
 		goto cleanup;
 	}
+    wkup.sw_pfn = sowake;
+    wkup.sw_arg = (caddr_t)&waiting;
+    setsockopt(sd, SOL_SOCKET, SO_RCVWAKEUP, &wkup, sizeof(wkup));
 	}
 	if ( !(rtems_gdb_strm = fdopen(sd, "r+")) ) {
 		perror("GDB daemon: unable to open stream");
@@ -703,99 +642,24 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
 	while (1) {
 
-#ifdef MSGTEST
-/* TODO switch to new task */
-	if ( RTEMS_SUCCESSFUL !=
-         (sc = rtems_message_queue_receive(
-            rtems_gdb_q, 
-            &msg,
-            &msgsize,
-            RTEMS_WAIT,
-            RTEMS_NO_TIMEOUT)) ) {
-        rtems_error(sc,"GDB daemon: unable to rcv messages, exiting...");
-        cleanup_connection();
-		goto cleanup;
-    }
-	printk("got message size %i\n",msgsize);
-
-	if ( msgsize < sizeof(RtemsDebugMsgRec) ) {
-      char ch = *(char*)&msg;
-      int  n;
-      if ( GDB_KILL == ch ) {
-			cleanup_connection();
-			goto cleanup;
-      }
-	  /* activity on the socket while we are waiting for
-       * something happening on the target
-       */
-      n = recv(sd, &ch, sizeof(ch), MSG_PEEK );
-	  fprintf(stderr,"recvd n=%i\n", n);
-	  if ( n <= 0 ) {
-		perror("GDB daemon receive; connection dead?");
-         /* connection probably dead */
-			break;
-	  }
-      if ( CTRLC == ch ) {
-		fprintf(stderr,"TODO -- CTRLC handling\n");
-	  }
-	  /* ignore */
-	  continue;
-	}
-
-  if (rtems_remote_debug)
-    printf ("signal=%d\n", msg.sig);
-
-  /* reply to host that an exception has occurred */
-  remcomOutBuffer[0] = 'S';
-  remcomOutBuffer[1] = hexchars[msg.sig >> 4];
-  remcomOutBuffer[2] = hexchars[msg.sig % 16];
-  remcomOutBuffer[3] = 0;
-
-  putpacket (remcomOutBuffer);
-#endif
-
-  stepping = 0;
-
-  while (1 == 1)
-    {
-	  rtems_event_set evs = 0;
+	  evs = 0;
       remcomOutBuffer[0] = 0;
 
-#if 0
-printf("Entering wait\n");
-      sc = rtems_event_receive(
-			(GDB_NET_EVENT | GDB_KILL_EVENT),
-			(RTEMS_EVENT_ANY | RTEMS_WAIT),
-			RTEMS_NO_TIMEOUT,
-			&evs);
-printf("Got events %x\n",evs);
-#endif
+	ptr = getpacket();
 
-	  if ( GDB_KILL_EVENT & evs ) {
-		printf("GDB daemon killed\n");
-		goto cleanup;
-	  }
-      if ( RTEMS_SUCCESSFUL != sc ) {
-		rtems_error(sc,"Waiting for event");
-		goto cleanup;
-	  }
-      ptr = (GDB_NET_EVENT & evs) ? getpacket() : 0;
-	  if (!ptr) {
-		fprintf(stderr,"Link broken? -- disconnect\n");
-		goto release_connection;
-	  }
 	if (rtems_remote_debug > 2) {
 		printf("Got packet '%c' \n", *ptr);
 	}
-      switch (*ptr++)
+
+    switch (*ptr++)
 	{
 	default:
-	  strcpy(remcomOutBuffer,"E16");
+	  remcomOutBuffer[0] = 0;
 	  break;
 	case '?':
 	  remcomOutBuffer[0] = 'S';
-	  remcomOutBuffer[1] = hexchars[current.sig >> 4];
-	  remcomOutBuffer[2] = hexchars[current.sig % 16];
+	  remcomOutBuffer[1] = hexchars[current->sig >> 4];
+	  remcomOutBuffer[2] = hexchars[current->sig % 16];
 	  remcomOutBuffer[3] = 0;
 	  break;
 	case 'd':
@@ -806,22 +670,22 @@ printf("Got events %x\n",evs);
 	  goto release_connection;
 
 	case 'g':		/* return the value of the CPU registers */
-	  if (!havestate(&current))
+	  if (!havestate(current))
 		break;
-	  rtems_gdb_tgt_f2r(regbuf, current.frm, current.tid);
+	  rtems_gdb_tgt_f2r(regbuf, current);
 	  mem2hex ((char *) regbuf, remcomOutBuffer, NUMREGBYTES);
 	  break;
 
 	case 'G':		/* set the value of the CPU registers - return OK */
-	  if (!havestate(&current))
+	  if (!havestate(current))
 		break;
 	  hex2mem (ptr, (char *) regbuf, NUMREGBYTES);
-	  rtems_gdb_tgt_r2f(current.frm, current.tid, regbuf);
+	  rtems_gdb_tgt_r2f(current, regbuf);
 	  strcpy (remcomOutBuffer, "OK");
 	  break;
 
     case 'H':
-      { rtems_id tid;
+      {
 		tid = strtol(ptr+1,0,16);
 	  	if ( 'c' == *ptr ) {
 	  	} else if ( 'g' == *ptr ) {
@@ -829,17 +693,14 @@ printf("Got events %x\n",evs);
 		if ( rtems_remote_debug ) {
 			printf("New 'H' thread id set: 0x%08x\n",tid);
 		}
-#ifdef MSGTEST
-		if ( msg.tid )
-			current = msg;
-		else
-#endif
 		{
-			if ( TID_ALL == tid || TID_ANY == tid || rtems_gdb_tid == tid )
+			if ( (TID_ALL == tid || TID_ANY == tid) )
+				tid = current->tid ? current->tid : dummy_tid;
+			else if ( rtems_gdb_tid == tid )
 				tid = dummy_tid;
-			if ( current.tid == tid )
+			if ( current->tid == tid )
 				break;
-			task_switch_to(&current, tid);
+			current = task_switch_to(current, tid);
 		}
 	  }
     break;
@@ -897,6 +758,58 @@ printf("Got events %x\n",evs);
 
 	  break;
 
+	case 's': /* trace */
+	case 'c':
+		if ( hexToInt(&ptr, &i) ) /* optional addr arg */
+			rtems_gdb_tgt_set_pc(current, i);
+		i   = task_resume( current, 's' == *(ptr-1) ? SIGTRAP : SIGCONT );
+
+		/* check if there's another message pending */
+		msg = getFirstMsg();
+
+		if ( msg ) {
+			current = msg;
+		} else if ( 0 == i ) {
+		/* tiny chances for a race condition here -- if they hit the
+		 * button before we set the flag
+		 */
+		do {
+		waiting = 1;
+		rtems_event_receive(GDB_NET_EVENT|GDB_KILL_EVENT|GDB_SIG_EVENT, RTEMS_EVENT_ANY | RTEMS_WAIT, RTEMS_NO_TIMEOUT, &evs);
+		waiting = 0;
+
+		tid     = current->tid;
+		current = 0;
+
+		if ( GDB_KILL_EVENT & evs ) {
+			printf("Daemon killed;\n");
+			goto release_connection;
+		}
+		if (GDB_NET_EVENT & evs) {
+			printf("net event\n");
+			/* should be '\003' */
+			getDebugChar();
+			/* stop the current thread */
+  			current = task_switch_to(current, tid);
+		} else {
+			/* stopped on something in the queue */
+			current = getFirstMsg();
+			/* It's possible that current == NULL, i.e., we got
+			 * probably a leftover event; this can happen
+			 * if we switch to a thread before picking
+			 * it up from here...
+			 */
+		}
+		} while ( !current );
+		} /* else
+		   * couldn't restart the thread. It's dead
+		   * or was already suspended; since there were
+		   * no messages pending, we return the old signal status
+		   */
+
+		sprintf(remcomOutBuffer,"T%02xthread:08%x;",current->sig, current->tid);
+	break;
+
 #if 0
 	  /* cAA..AA    Continue at address AA..AA(optional) */
 	  /* sAA..AA   Step one instruction from AA..AA(optional) */
@@ -931,15 +844,15 @@ printf("Got events %x\n",evs);
 
 	case 'P':
 	  strcpy(remcomOutBuffer,"E16");
-	  if (   !havestate(&current)
+	  if (   !havestate(current)
           || !hexToInt(&ptr, &regno)
           || '=' != *ptr++
 		  || (i = rtems_gdb_tgt_regoff(regno, &j)) < 0 )
 		break;
 		
-	  rtems_gdb_tgt_f2r((char*)regbuf,current.frm,current.tid);
+	  rtems_gdb_tgt_f2r((char*)regbuf,current);
 	  hex2mem (ptr, ((char*)regbuf) + j, i);
-	  rtems_gdb_tgt_r2f(current.frm, current.tid, regbuf);
+	  rtems_gdb_tgt_r2f(current, regbuf);
 	  strcpy (remcomOutBuffer, "OK");
 	  break;
 
@@ -1032,18 +945,22 @@ printf("Got events %x\n",evs);
 		}	
 	  break;
 
+	  case 'Z':
+		strcpy(remcomOutBuffer,"OK");
+	  break;
+
 	}			/* switch */
 
       /* reply to the request */
-      putpacket (remcomOutBuffer);
-    }
+      if (putpacket (remcomOutBuffer))
+		goto release_connection;
   }
 release_connection:
   /* make sure attached thread continues */
-  task_switch_to(&current, dummy_tid);
+  current = task_switch_to(current, dummy_tid);
   cleanup_connection();
 
-  }
+  } while ( !(GDB_KILL_EVENT & evs) );
 
 /* shutdown */
 cleanup:
@@ -1051,10 +968,6 @@ cleanup:
   	rtems_task_delete(dummy_tid);
   if ( ehandler_installed ) {
 	rtems_debug_install_ehandler(0);
-  }
-  if ( rtems_gdb_q ) {
-    rtems_message_queue_delete(rtems_gdb_q);
-    rtems_gdb_q = 0;
   }
   if ( rtems_gdb_strm ) {
 	fclose(rtems_gdb_strm);
@@ -1145,7 +1058,7 @@ rtems_debug_start(int pri)
 int
 _cexpModuleFinalize(void *h)
 {
-	if ( rtems_gdb_q ) {
+	if ( rtems_gdb_tid ) {
 		fprintf(stderr,"GDB daemon still running; refuse to unload\n");
 		return -1;
 	}
@@ -1166,9 +1079,7 @@ _cexpModuleInitialize(void *h)
 void
 rtems_debug_stop()
 {
-char ch=GDB_KILL;
 int  sd;
-	rtems_message_queue_urgent(rtems_gdb_q, &ch, 1);
 	rtems_event_send(rtems_gdb_tid,GDB_KILL_EVENT);
 	sd = rtems_gdb_sd;
 	rtems_gdb_sd = -1;
@@ -1176,28 +1087,116 @@ int  sd;
 		close(sd);
 }
 
-static void
+/* restart the thread provided that it exists and
+ * isn't suspended due to a 'real' exception (as opposed to
+ * a breakpoint).
+ */
+static int
+task_resume(RtemsDebugMsg msg, int sig)
+{
+	if ( msg->tid ) {
+		/* if we attached to an already sleeping thread, don't resume
+		 * don't resume DEAD threads that were suspended due to memory
+		 * faults etc. either
+		 */
+		if ( SIGINT == msg->sig || (msg->frm && SIGTRAP == msg->sig) ) {
+			msg->contSig = sig;
+			assert(msg->node.p == msg->node.n && msg->node.p == &msg->node);
+			rtems_task_resume(msg->tid);
+			return 0;
+		} else {
+			/* add to cemetery if not there already */
+			if ( &msg->node == msg->node.p )
+				cdll_splerge_tail(&cemetery, &msg->node);
+			msg->contSig = 0;
+		}
+	}
+	return -1;
+}
+
+
+static RtemsDebugMsg
 task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 {
-printf("SWITCH 0x%08x -> 0x%08x\n", cur->tid, new_tid);
-	if ( cur->tid ) {
-		if ( cur->contSig )
-			*cur->contSig = SIGCONT;
-		/* if we attached to an already sleeping thread, don't resume */
-		if ( SIGSTOP == cur->sig || (cur->frm && SIGTRAP == cur->sig) )
-			rtems_task_resume(cur->tid);
-	}
-	memset(cur,0,sizeof(*cur));
+printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
+
+	if ( cur )
+		task_resume(cur, SIGCONT);
+
+	cur = &currentEl;
+
+	memset(cur, 0, sizeof(*cur));
+	cdll_init_el(&cur->node);
+
 	cur->tid = new_tid;
+
 	if ( new_tid ) {
 		rtems_status_code sc;
 		switch ( (sc = rtems_task_suspend( new_tid )) ) {
-			case RTEMS_SUCCESSFUL:        cur->sig = SIGSTOP; break;
-			case RTEMS_ALREADY_SUSPENDED: cur->sig = SIGCHLD; break;
+			case RTEMS_SUCCESSFUL:
+				cur->sig = SIGINT;
+				break;
+
+			case RTEMS_ALREADY_SUSPENDED:
+				/* Hmm - could be that this is a task that is in
+				 * the list somewhere.
+				 * NOTE: it is NOT necessary to lock the list while
+				 *       we scan it since new elements could ONLY be
+				 *		 added _after_ the current tail AND the target
+				 *       we're looking for is already suspended and
+				 *       hence somewhere between the anchor and the
+				 *       current tail;
+				 */
+				{
+				RtemsDebugMsg t;
+					cur->sig = SIGSTOP;
+					if ( (t = threadOnListBwd(&anchor, new_tid)) ) {
+						unsigned long flags;
+						/* found; dequeue and return */
+						rtems_interrupt_disable(flags);
+						cdll_splerge_tail(&t->node, t->node.p);
+						rtems_interrupt_enable(flags);
+						cur = t;
+					} else if ( ( t = threadOnListBwd(&cemetery, new_tid) ) ) {
+						cur = t;
+					}
+				}
+				break;
+				
 			default:
 				cur->tid = 0;
 				rtems_error(sc, "suspending target thread 0x%08x failed", new_tid);
 			break;
 		}
 	}
+return cur;
 }
+
+/* this is called from exception handler (ISR) context !! */
+void rtems_debug_notify_and_suspend(RtemsDebugMsg msg)
+{
+	cdll_init_el(&msg->node);
+
+	/* hook into the list */
+	cdll_splerge_tail(&anchor, &msg->node);
+
+	/* notify the daemon that a stopped thread is available */
+	rtems_event_send(rtems_gdb_tid, GDB_SIG_EVENT);
+
+	/* hackish but it should work:
+	 * rtems_task_suspend should work for other APIs also...
+	 * probably should check for 'local' node.
+	 */
+	rtems_task_suspend( msg->tid );
+}
+
+static RtemsDebugMsg getFirstMsg()
+{
+CdllNode msg;
+unsigned long flags;
+	rtems_interrupt_disable(flags);
+	msg = cdll_dequeue_head(&anchor);
+	rtems_interrupt_enable(flags);
+	return (RtemsDebugMsg)(msg == &anchor ? 0 : msg);
+}
+

@@ -3,6 +3,8 @@
 
 #define __RTEMS_VIOLATE_KERNEL_VISIBILITY__
 #include <rtems.h>
+#include <rtems/bspIo.h> /* printk */
+#include <bsp.h>
 
 #include "rtems-gdb-stub-ppc-shared.h"
 
@@ -69,9 +71,10 @@ rtems_gdb_tgt_regoff(int regno, int *poff)
 
 /* map exception frame into register array (GDB layout) */
 void
-rtems_gdb_tgt_f2r(unsigned char *buf, RtemsDebugFrame f, rtems_id tid)
+rtems_gdb_tgt_f2r(unsigned char *buf, RtemsDebugMsg msg)
 {
 Thread_Control *tcb;
+RtemsDebugFrame f = msg->frm;
 int            deadbeef = 0xdeadbeef, i;
 
 	memset(buf, 0, NUMREGBYTES);
@@ -92,7 +95,7 @@ int            deadbeef = 0xdeadbeef, i;
 		memcpy(buf + CTR__OFF, &deadbeef, 4);
 	}
 
-	if ( (tcb = get_tcb(tid)) ) {
+	if ( (tcb = get_tcb(msg->tid)) ) {
 		Context_Control_fp *fpc = tcb->fp_context;
 		if ( fpc ) {
 			memcpy(buf + FPR0_OFF, &fpc->f[0], 32*8 );
@@ -100,7 +103,6 @@ int            deadbeef = 0xdeadbeef, i;
 		}
 		if (!f) {
 			Frame        sfr = (Frame)tcb->Registers.gpr1;
-			unsigned lrdummy = 0xdeadbeef;
 			unsigned pcdummy = tcb->Registers.pc - 4;
 			if (!sfr->lr)
 				sfr = sfr->up;
@@ -117,8 +119,9 @@ int            deadbeef = 0xdeadbeef, i;
 }
 
 void
-rtems_gdb_tgt_r2f(RtemsDebugFrame f, rtems_id tid, unsigned char *buf)
+rtems_gdb_tgt_r2f(RtemsDebugMsg msg, unsigned char *buf)
 {
+RtemsDebugFrame f = msg->frm;
 Thread_Control *tcb = 0;
 
 	if ( f ) {
@@ -131,7 +134,7 @@ Thread_Control *tcb = 0;
 		memcpy(&f->EXC_XER,  buf + XER__OFF, 4);
 	}
 
-	if ( tid && (tcb = get_tcb(tid)) ) {
+	if ( msg->tid && (tcb = get_tcb(msg->tid)) ) {
 		Context_Control_fp *fpc = tcb->fp_context;
 		if ( fpc ) {
 			memcpy(&fpc->f[0],   buf+FPR0_OFF,    32*8 );
@@ -169,9 +172,6 @@ static void
 exception_handler(BSP_Exception_frame *f)
 {
 RtemsDebugMsgRec msg;
-int				 contSig = -1;
-
-	msg.contSig = &contSig;
 
     if (   rtems_interrupt_is_in_progress()
 	    || !_Thread_Executing 
@@ -212,7 +212,7 @@ printk("Task %x got exception %i, frame %x, GPR1 %x\n",
 		break;
 
 		case ASM_SYS_VECTOR      :
-			msg.sig = SIGCHLD;
+			msg.sig = SIGTRAP;
 		break;
 
 		case ASM_TRACE_VECTOR    :
@@ -234,8 +234,8 @@ printk("Task %x got exception %i, frame %x, GPR1 %x\n",
 		f->GPR3     = msg.sig;
         return;
 	} else {
-		rtems_message_queue_send(rtems_gdb_q, &msg, sizeof(msg));
-		rtems_task_suspend(msg.tid);
+		rtems_debug_notify_and_suspend(&msg);
+		return;
 	}
 
 	origHandler(f);
@@ -274,3 +274,14 @@ rtems_unsigned32 flags;
 	return rval;
 }
 
+void
+rtems_gdb_tgt_set_pc(RtemsDebugMsg msg, int pc)
+{
+Thread_Control *tcb;
+	if ( msg->frm ) {
+		msg->frm->EXC_SRR0 = pc;
+	} else if ( (tcb = get_tcb(msg->tid)) ) {
+		tcb->Registers.pc = pc;
+		_Thread_Enable_dispatch();
+	}
+}
