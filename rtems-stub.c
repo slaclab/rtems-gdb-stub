@@ -537,8 +537,22 @@ static  rtems_id        dummy_tid = 0;
 
 static int unAttachedCmd(int ch)
 {
-	return 'H' == ch || 'm'==ch || 'd' == ch || 'D' == ch
-           || 'q' == ch;
+	switch (ch) {
+		case 'c':
+		case 'd':
+		case 'D':
+		case 'H':
+		case 'm':
+		case 'M':
+		case 'T':
+		case 'X':
+		case 'z':
+		case 'Z':
+			return 1;
+
+		default: break;
+	}
+	return 0;
 }
 
 static int compileThreadExtraInfo(char *extrabuf, rtems_id tid)
@@ -730,11 +744,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		assert( theDummy );
 	}
 	dummy_frame_pc = rtems_gdb_tgt_get_pc( theDummy );
-#ifndef ONETHREAD_TEST
-	current = theDummy;
-#else
-	current = 0;
-#endif
+	current = task_switch_to(0, dummy_tid);
 
 	{
 	struct sockaddr_in a;
@@ -748,6 +758,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
     wkup.sw_arg = (caddr_t)0;
     setsockopt(sd, SOL_SOCKET, SO_RCVWAKEUP, &wkup, sizeof(wkup));
 	}
+
 	if ( !(rtems_gdb_strm = fdopen(sd, "r+")) ) {
 		perror("GDB daemon: unable to open stream");
 		close(sd);
@@ -783,13 +794,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		/* Detach */
 	case 'D':
       strcpy(remcomOutBuffer,"OK");
-#ifndef ONETHREAD_TEST
-	  detach_all_tasks();
-	  current = 0;
-	  rtems_gdb_break_tid = 0;
-#else
-	  goto cleanup_connection();
-#endif
+	  goto cleanup_connection;
 	break;
 
 	case 'g':		/* read registers */
@@ -817,7 +822,6 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		if ( rtems_remote_debug & DEBUG_SCHED ) {
 			printf("New 'H%c' thread id set: 0x%08x\n",*ptr,tid);
 		}
-#ifndef ONETHREAD_TEST
 	  	if ( 'c' == *ptr ) {
 			/* We actually have slightly different semantics.
 			 * In our case, this TID tells us whether we break
@@ -839,24 +843,6 @@ rtems_gdb_daemon (rtems_task_argument arg)
 				break;
 			current = task_switch_to(current, tid);
 	  	}
-#else
-		if ( rtems_gdb_break_tid && tid != rtems_gdb_break_tid ) {
-			strcpy(remcomOutBuffer,"E0D");
-		} else if ( !current ) {
-			/* "attach" */
-			if ( tid ) {
-				rtems_gdb_break_tid = tid;
-				current = task_switch_to( 0, tid );
-			} else {
-				/* wait for target */
-				if ( pendSomethingHappening(&current, tid, remcomOutBuffer) < 0 ) {
-					/* daemon killed */
-					goto release_connection;
-				}
-
-			}
-		}
-#endif
 	  }
     break;
 
@@ -1405,13 +1391,16 @@ task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 	if ( rtems_remote_debug & DEBUG_SCHED )
 		printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
 
-	if ( cur && cur->tid == new_tid )
-		return cur;
+	assert( new_tid );
 
 	if ( new_tid == dummy_tid && theDummy ) {
+		/* dummy thread is still stopped in its tracks;
+		 * just pick it up...
+		 */
 		cur = theDummy;
 		theDummy = 0;
-	} else if ( new_tid ) {
+	} else if ( !cur || cur->tid != new_tid ) {
+		/* only try to suspend if we really switch threads */
 		rtems_status_code sc;
 		switch ( (sc = rtems_task_suspend( new_tid )) ) {
 			case RTEMS_ALREADY_SUSPENDED:
@@ -1443,7 +1432,7 @@ task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 						cur = t;
 						break;
 					} else {
-						/* hit an already suspended thread
+						/* hit an already thread suspended by someone else
 						 * FALL THROUGH and get a new (frameless) node
 						 */
 					}
@@ -1700,7 +1689,7 @@ RtemsDebugMsg msg;
 	}
 		/* another thread got a signal */
   } while ( !*pcurrent );
-  if ( rtems_remote_debug & DEBUG_SCHED && !threadOnListBwd(&stopped, (*pcurrent)->tid ) ) {
+  if ( (rtems_remote_debug & DEBUG_SCHED) && !threadOnListBwd(&stopped, (*pcurrent)->tid ) ) {
 	fprintf(stderr,"OOPS: msg %p, tid %x stoppedp %p\n",msg,(*pcurrent)->tid, stopped.p);
   }
   assert( threadOnListBwd(&stopped, (*pcurrent)->tid) );
