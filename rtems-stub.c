@@ -17,8 +17,6 @@
 #include <assert.h>
 #include <ctype.h>
 
-#define HAVE_CEXP
-
 #ifdef HAVE_CEXP
 #include <cexp.h>
 /* we do no locking - hope nobody messes with the
@@ -302,7 +300,7 @@ STATIC char *
 mem2hex(char *mem, char *buf, int len)
 {
 register unsigned char ch;
-	while (len-- >= 0) {
+	while (len-- > 0) {
 		ch = *mem++;
 		*buf++ = hexchars[ch >>  4];
 		*buf++ = hexchars[ch & 0xf];
@@ -1716,7 +1714,8 @@ RtemsDebugMsg msg;
 		 */
 
 		if ( ! *pcurrent ) {
-			printf("net event\n");
+			if ( rtems_remote_debug & DEBUG_COMM )
+				printf("net event\n");
 			/* should be '\003' */
 			getDebugChar();
 #if 0
