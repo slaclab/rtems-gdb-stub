@@ -1,109 +1,4 @@
-/****************************************************************************
-
-		THIS SOFTWARE IS NOT COPYRIGHTED  
-   
-   HP offers the following for use in the public domain.  HP makes no
-   warranty with regard to the software or it's performance and the 
-   user accepts the software "AS IS" with all faults.
-
-   HP DISCLAIMS ANY WARRANTIES, EXPRESS OR IMPLIED, WITH REGARD
-   TO THIS SOFTWARE INCLUDING BUT NOT LIMITED TO THE WARRANTIES
-   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
-
-****************************************************************************/
-
-/****************************************************************************
- *  Header: remcom.c,v 1.34 91/03/09 12:29:49 glenne Exp $                   
- *
- *  Module name: remcom.c $  
- *  Revision: 1.34 $
- *  Date: 91/03/09 12:29:49 $
- *  Contributor:     Lake Stevens Instrument Division$
- *  
- *  Description:     low level support for gdb debugger. $
- *
- *  Considerations:  only works on target hardware $
- *
- *  Written by:      Glenn Engel $
- *  ModuleState:     Experimental $ 
- *
- *  NOTES:           See Below $
- * 
- *  To enable debugger support, two things need to happen.  One, a
- *  call to set_debug_traps() is necessary in order to allow any breakpoints
- *  or error conditions to be properly intercepted and reported to gdb.
- *  Two, a breakpoint needs to be generated to begin communication.  This
- *  is most easily accomplished by a call to breakpoint().  Breakpoint()
- *  simulates a breakpoint by executing a trap #1.  The breakpoint instruction
- *  is hardwired to trap #1 because not to do so is a compatibility problem--
- *  there either should be a standard breakpoint instruction, or the protocol
- *  should be extended to provide some means to communicate which breakpoint
- *  instruction is in use (or have the stub insert the breakpoint).
- *  
- *  Some explanation is probably necessary to explain how exceptions are
- *  handled.  When an exception is encountered the 68000 pushes the current
- *  program counter and status register onto the supervisor stack and then
- *  transfers execution to a location specified in it's vector table.
- *  The handlers for the exception vectors are hardwired to jmp to an address
- *  given by the relation:  (exception - 256) * 6.  These are decending 
- *  addresses starting from -6, -12, -18, ...  By allowing 6 bytes for
- *  each entry, a jsr, jmp, bsr, ... can be used to enter the exception 
- *  handler.  Using a jsr to handle an exception has an added benefit of
- *  allowing a single handler to service several exceptions and use the
- *  return address as the key differentiation.  The vector number can be
- *  computed from the return address by [ exception = (addr + 1530) / 6 ].
- *  The sole purpose of the routine _catchException is to compute the
- *  exception number and push it on the stack in place of the return address.
- *  The external function exceptionHandler() is
- *  used to attach a specific handler to a specific m68k exception.
- *  For 68020 machines, the ability to have a return address around just
- *  so the vector can be determined is not necessary because the '020 pushes an
- *  extra word onto the stack containing the vector offset
- * 
- *  Because gdb will sometimes write to the stack area to execute function
- *  calls, this program cannot rely on using the supervisor stack so it
- *  uses it's own stack area reserved in the int array remcomStack.  
- * 
- *************
- *
- *    The following gdb commands are supported:
- * 
- * command          function                               Return value
- * 
- *    g             return the value of the CPU registers  hex data or ENN
- *    G             set the value of the CPU registers     OK or ENN
- * 
- *    mAA..AA,LLLL  Read LLLL bytes at address AA..AA      hex data or ENN
- *    MAA..AA,LLLL: Write LLLL bytes at address AA.AA      OK or ENN
- * 
- *    c             Resume at current address              SNN   ( signal NN)
- *    cAA..AA       Continue at address AA..AA             SNN
- * 
- *    s             Step one instruction                   SNN
- *    sAA..AA       Step one instruction from AA..AA       SNN
- * 
- *    k             kill
- *
- *    ?             What was the last sigval ?             SNN   (signal NN)
- * 
- * All commands and responses are sent with a packet which includes a 
- * checksum.  A packet consists of 
- * 
- * $<packet info>#<checksum>.
- * 
- * where
- * <packet info> :: <characters representing the command or response>
- * <checksum>    :: < two hex digits computed as modulo 256 sum of <packetinfo>>
- * 
- * When a packet is received, it is first acknowledged with either '+' or '-'.
- * '+' indicates a successful transfer.  '-' indicates a failed transfer.
- * 
- * Example:
- * 
- * Host:                  Reply:
- * $m0,10#2a               +$00010203040506070809101112131415#42
- * 
- ****************************************************************************/
+/* $Id$ */
 
 #define __RTEMS_VIOLATE_KERNEL_VISIBILITY__
 #include <rtems.h>
@@ -120,6 +15,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <ctype.h>
 
 #define HAVE_CEXP
 
@@ -131,20 +27,16 @@
 #include <cexpmodP.h>
 #endif
 
-
-#ifdef __PPC__
+#if defined(__PPC__)
 #include "rtems-gdb-stub-ppc-shared.h"
+#elif defined(__i386__)
+#include "rtems-gdb-stub-i386.h"
 #else
 #error need target specific helper implementation
 #endif
 
 #define TID_ANY ((rtems_id)0)
 #define TID_ALL ((rtems_id)-1)
-
-/************************************************************************
- *
- * external low-level support routines 
- */
 
 static   FILE *rtems_gdb_strm = 0;
 
@@ -164,56 +56,42 @@ static inline void flushDebugChars()
 	fflush(rtems_gdb_strm);
 }
 
-
-/************************/
 /* FORWARD DECLARATIONS */
-/************************/
 
 static int
 pendSomethingHappening(RtemsDebugMsg *, int, char*);
 
-static int resume_stopped_task(rtems_id tid, int sig);
+static int
+resume_stopped_task(rtems_id tid, int sig);
 
-/************************************************************************/
-/* BUFMAX defines the maximum number of characters in inbound/outbound buffers*/
-/* at least NUMREGBYTES*2 are needed for register packets */
-#define BUFMAX 400
-#define EXTRABUFSZ	200
-#define STATIC 
+#define BUFMAX      400		/* size of communication buffer; depends on NUMREGBYTES  */
+#define EXTRABUFSZ	200     /* size of buffer for thread extra and other string info */
 
+/* Debugging definitions */
+#define STATIC
+
+/* Configuration Defs    */
 #define CTRLC  3
 #define RTEMS_GDB_Q_LEN 200
 #define RTEMS_GDB_PORT 4444
 
+/* Adjust buffer sizes   */
 #if (EXTRABUFSZ+15) > NUMREGBYTES
-#define CHRBUFSZ (EXTRABUFSZ+15)
+#  define CHRBUFSZ (EXTRABUFSZ+15)
 #else
-#define CHRBUFSZ NUMREGBYTES
+#  define CHRBUFSZ NUMREGBYTES
 #endif
-
 
 #if BUFMAX < 2*CHRBUFSZ + 100
 #  undef  BUFMAX
 #  define BUFMAX (2*CHRBUFSZ+100)
 #endif
 
-static volatile char initialized=0;  /* boolean flag. != 0 means we've been initialized */
+static volatile char initialized=0;
 
-/* Table used by the crc32 function to calcuate the checksum. */
-/* CRC32 algorithm from GDB: gdb/remote.c (GPL!!) */
-static unsigned long crc32_table[256] =
-{0, 0};
-                                                                                                                                                         
-static unsigned long
-crc32 (unsigned char *buf, int len, unsigned int crc)
-{
- while (len--)
-    {
-      crc = (crc << 8) ^ crc32_table[((crc >> 24) ^ *buf) & 255];
-      buf++;
-    }
-  return crc;
-}
+/* Include GPL code */
+
+#include "crc32.c"
 
 STATIC rtems_id gdb_pending_id = 0;
 
@@ -297,6 +175,7 @@ msgFree(RtemsDebugMsg msg)
 /************* jump buffer used for setjmp/longjmp **************************/
 STATIC jmp_buf remcomEnv;
 
+#ifdef OBSOLETE_IO
 STATIC int
 hex (ch)
      char ch;
@@ -309,13 +188,23 @@ hex (ch)
     return (ch - 'A' + 10);
   return (-1);
 }
+#else
+STATIC int
+hex(unsigned char ch)
+{
+int rval = toupper(ch);
+	return rval > '9' ? rval-'A'+10 : rval-'0';
+}
+
+#endif
 
 STATIC char remcomInBuffer[BUFMAX];
 STATIC char remcomOutBuffer[BUFMAX];
 
-/* scan for the sequence $<data>#<checksum>     */
 #define GETCHAR() \
-	  do { if ( (ch = getDebugChar()) <= 0 ) return 0; }  while (0)
+	  do { if ( (ch = getDebugChar()) < 0 ) { if (ch) perror("GETCHAR"); else fprintf(stderr,"GETCHAR ZERO\n"); return 0;} }  while (0)
+
+#ifdef OBSOLETE_IO
 
 STATIC unsigned char *
 getpacket (void)
@@ -393,8 +282,67 @@ getpacket (void)
     }
 }
 
-/* send the packet in buffer. */
+#else
+/* scan for the sequence $<data>#<checksum>     */
+STATIC unsigned char *
+getpacket(unsigned char *buf)
+{
+unsigned char	chks, xchks;
+int				n,ch = 0;
 
+	goto synchronize;
+
+	do {
+
+		putDebugChar('-');
+		flushDebugChars();
+		if ( rtems_remote_debug ) {
+			fprintf(stderr,"Checksum mismatch: counted %x, xmit-sum is %x, string %s\n",
+					chks, xchks, buf);
+		}
+
+synchronize:
+
+		/* skip till we detect a lead-char */
+		while ( '$' != ch ) {
+			GETCHAR();
+		}
+
+		GETCHAR();
+
+		for ( n = chks = 0; '#'!=ch; ) {
+			if ( '$' == ch || n >= BUFMAX-1 ) {
+				/* start over */
+				goto synchronize;
+			} else {
+				buf[n++] = ch;
+				chks  += ch;
+			}
+			GETCHAR();
+		}
+		buf[n] = 0;
+
+		GETCHAR();
+		xchks = hex(ch);
+		GETCHAR();
+		xchks = (xchks<<4) + hex(ch);
+
+	} while (xchks != chks);
+
+	putDebugChar('+');
+	if ( ':' == buf[2] ) {
+		/* sequence; echo seq. id */
+		putDebugChar(buf[0]);
+		putDebugChar(buf[1]);
+		buf += 3;
+	}
+	flushDebugChars();
+	return buf;
+}
+
+#endif
+
+#ifdef OBSOLETE_IO
 STATIC int
 putpacket (buffer)
      char *buffer;
@@ -429,6 +377,33 @@ putpacket (buffer)
   } while ( count > 0 && count != '+');
   return count <= 0;
 }
+#else
+/* send the packet in NULL terminated buffer. */
+STATIC int
+putpacket(char *buf)
+{
+register unsigned char chks, *pch;
+register int           i;
+	do {
+		putDebugChar('$');
+		for ( chks=0, pch=buf; *pch; pch++ ) {
+			putDebugChar(*pch);
+			chks += *pch;
+		}
+		putDebugChar('#');
+		putDebugChar(hexchars[chks>>4]);
+		putDebugChar(hexchars[chks & 0xf]);
+		flushDebugChars();
+		if ( rtems_remote_debug > 2 ) {
+			fprintf(stderr,"Putting packet: %s\n",buf);
+		}
+		i = getDebugChar();
+	} while ( i > 0 && '+' != i );
+fprintf(stderr,"PUTPACK return i %i\n",i);
+	return i<=0;	
+}
+
+#endif
 
 STATIC void
 debug_error (char *format, char *parm)
@@ -437,7 +412,23 @@ debug_error (char *format, char *parm)
     fprintf (stderr, format, parm);
 }
 
-/* convert the memory pointed to by mem into hex, placing result in buf */
+/* Convert binary data to null terminated hex string;
+   return pointer to terminating NULL */
+
+STATIC char *
+mem2hex(char *mem, char *buf, int len)
+{
+register unsigned char ch;
+	while (len-- >= 0) {
+		ch = *mem++;
+		*buf++ = hexchars[ch >>  4];
+		*buf++ = hexchars[ch & 0xf];
+	}
+	*buf = 0;
+	return buf;
+}
+
+#ifdef OBSOLETE
 /* return a pointer to the last char put in buf (null) */
 STATIC char *
 mem2hex (mem, buf, count)
@@ -456,15 +447,15 @@ mem2hex (mem, buf, count)
   *buf = 0;
   return (buf);
 }
+#endif
 
 /* integer to BE hex; buffer must be large enough */
-
 STATIC char *
-intToHex(int i, char *buf)
+int2hex(int i, char *buf)
 {
 register int j = 2*sizeof(i);
 
-    if ( i< 0 ) {
+	if ( i< 0 ) {
 		*buf++='-';
 		i = -i;
 	}
@@ -476,8 +467,21 @@ register int j = 2*sizeof(i);
 	return buf+2*sizeof(i);
 }
 
-/* convert the hex array pointed to by buf into binary to be placed in mem */
-/* return a pointer to the character AFTER the last byte written */
+/* Convert hex string to binary; return a pointer to the byte
+ * after the last one written
+ */
+
+STATIC char *
+hex2mem(char *buf, char *mem, int len)
+{
+	while (len--) {
+		*mem    = (hex(*buf++) << 4);
+		*mem++ +=  hex(*buf++);
+	}
+	return mem;
+}
+
+#ifdef OBSOLETE
 STATIC char *
 hex2mem (buf, mem, count)
      char *buf;
@@ -494,6 +498,7 @@ hex2mem (buf, mem, count)
     }
   return (mem);
 }
+#endif
 
 /**********************************************/
 /* WHILE WE FIND NICE HEX CHARS, BUILD AN INT */
@@ -522,6 +527,20 @@ hexToInt (char **ptr, int *intValue)
     }
 
   return (numChars);
+}
+
+/* Convert hex string into number; return number of chars converted */
+STATIC int
+hex2int(char **ppch, int *pval)
+{
+register int n,val;
+register unsigned char ch;
+
+	for (n=val=0; (ch=**ppch, isxdigit(ch)); n++, (*ppch)++) {
+		val = (val<<4) + hex(ch);
+	}
+	*pval = val;
+	return n;
 }
 
 volatile rtems_id  rtems_gdb_tid       = 0;
@@ -891,7 +910,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
 	cont_tid = 0;
 
-	while ( (ptr = getpacket()) ) {
+	while ( (ptr = getpacket(remcomInBuffer)) ) {
 
     remcomOutBuffer[0] = 0;
 
@@ -915,6 +934,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	  rtems_remote_debug = !(rtems_remote_debug);	/* toggle debug flag */
 	  break;
 
+		/* Detach */
 	case 'D':
       strcpy(remcomOutBuffer,"OK");
 #ifndef ONETHREAD_TEST
@@ -926,14 +946,14 @@ rtems_gdb_daemon (rtems_task_argument arg)
 #endif
 	break;
 
-	case 'g':		/* return the value of the CPU registers */
+	case 'g':		/* read registers */
 	  if (!havestate(current))
 		break;
 	  rtems_gdb_tgt_f2r(chrbuf, current);
 	  mem2hex ((char *) chrbuf, remcomOutBuffer, NUMREGBYTES);
 	  break;
 
-	case 'G':		/* set the value of the CPU registers - return OK */
+	case 'G':		/* set registers and return OK */
 	  if (!havestate(current))
 		break;
 	  hex2mem (ptr, (char *) chrbuf, NUMREGBYTES);
@@ -941,6 +961,10 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	  strcpy (remcomOutBuffer, "OK");
 	  break;
 
+		/* H[g|c]<tid> set current thread --
+		 *
+		 * NOTE: Hg STOPS and 'attaches' the target thread
+		 */
     case 'H':
       {
 		tid = strtol(ptr+1,0,16);
@@ -990,53 +1014,37 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	  }
     break;
 
-	  /* mAA..AA,LLLL  Read LLLL bytes at address AA..AA */
+	  /* m<addr>,<len>  --  read <len> bytes at <addr> */
 	case 'm':
-	  if (setjmp (remcomEnv) == 0)
-	    {
-	      /* TRY TO READ %x,%x.  IF SUCCEED, SET PTR = 0 */
-	      if (hexToInt (&ptr, &addr))
-		if (*(ptr++) == ',')
-		  if (hexToInt (&ptr, &len))
-		    {
-		      ptr = 0;
-		      mem2hex ((char *) addr, remcomOutBuffer, len);
-		    }
-
-	      if (ptr)
-		{
-		  strcpy (remcomOutBuffer, "E01");
+		if (   !hex2int(&ptr, &addr)
+			|| ',' != *ptr++
+			|| !hex2int(&ptr, &len) ) {
+			strcpy (remcomOutBuffer, "E01");
+			break;
 		}
+		if (setjmp (remcomEnv) == 0) {
+			/* Try to read */
+			mem2hex ((char *) addr, remcomOutBuffer, len);
+		} else {
+			strcpy (remcomOutBuffer, "E03");
+			debug_error ("%s\n","bus error");
 	    }
-	  else
-	    {
-	      strcpy (remcomOutBuffer, "E03");
-	      debug_error ("%s\n","bus error");
-	    }
+	break;
 
-	  break;
-
-	  /* MAA..AA,LLLL: Write LLLL bytes at address AA.AA return OK */
+	  /* M<addr>,<len>:<xx>  -- write <len> bytes (<xx>) to address <addr>, return OK */
 	case 'M':
-	  if (setjmp (remcomEnv) == 0)
-	    {
-	      /* TRY TO WRITE '%x,%x:'.  IF SUCCEED, SET PTR = 0 */
-	      if (hexToInt (&ptr, &addr))
-		if (*(ptr++) == ',')
-		  if (hexToInt (&ptr, &len))
-		    if (*(ptr++) == ':')
-		      {
-			hex2mem (ptr, (char *) addr, len);
-			ptr = 0;
-			strcpy (remcomOutBuffer, "OK");
-		      }
-	      if (ptr)
-		{
-		  strcpy (remcomOutBuffer, "E02");
+		if (   !hex2int(&ptr, &addr)
+			|| ',' != *ptr++
+			|| !hex2int(&ptr, &len)
+			|| ':' != *ptr++ ) {
+			strcpy (remcomOutBuffer, "E02");
+			break;
 		}
-	    }
-	  else
-	    {
+		if (setjmp (remcomEnv) == 0) {
+			/* Try to write */
+			hex2mem (ptr, (char *) addr, len);
+			strcpy (remcomOutBuffer, "OK");
+		} else {
 	      strcpy (remcomOutBuffer, "E03");
 	      debug_error ("%s\n","bus error");
 	    }
@@ -1048,7 +1056,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		{
 		int contsig = 's' == *(ptr-1) ? SIGTRAP : SIGCONT;
 
-		if ( hexToInt(&ptr, &i) ) { /* optional addr arg */
+		if ( hex2int(&ptr, &i) ) { /* optional addr arg */
 			if ( current ) {
 				if ( !current->frm ) {
 					/* refuse if we don't have a 'real' frame */
@@ -1083,10 +1091,11 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
 	break;
 
+		/* P<regno>=<val>  -- set register # <regno> to <val> */
 	case 'P':
 	  strcpy(remcomOutBuffer,"E16");
 	  if (   !havestate(current)
-          || !hexToInt(&ptr, &regno)
+          || !hex2int(&ptr, &regno)
           || '=' != *ptr++
 		  || (i = rtems_gdb_tgt_regoff(regno, &j)) < 0 )
 		break;
@@ -1097,12 +1106,13 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	  strcpy (remcomOutBuffer, "OK");
 	  break;
 
+		/* qXXX; various query packets, including our Cexp extensions */
 	case 'q':
       if ( !strcmp(ptr,"Offsets") ) {
 		/* ignore; GDB should use values from executable file */
 	  } else if ( !strncmp(ptr,"CRC:",4) ) {
 		ptr+=4;
-		if ( !hexToInt(&ptr,&addr) || ','!=*ptr++ || !hexToInt(&ptr,&len) ) {
+		if ( !hex2int(&ptr,&addr) || ','!=*ptr++ || !hex2int(&ptr,&len) ) {
 			strcpy(remcomOutBuffer,"E0D");
 		} else {
 			if ( 0 == setjmp(remcomEnv) ) {
@@ -1125,7 +1135,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		} else {
 			while ( tid_tab[tidx] && pto < remcomOutBuffer + sizeof(remcomOutBuffer) - 20 ) {
 				*pto++ = ',';
-				pto    = intToHex(tid_tab[tidx++], pto);
+				pto    = int2hex(tid_tab[tidx++], pto);
 			}
 			*pto = 0;
 			remcomOutBuffer[0]='m';
@@ -1145,7 +1155,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		if ( mod ) {
 			pto    = remcomOutBuffer;
 			*pto++ = 'm';
-			pto    = intToHex(mod->text_vma, pto); 
+			pto    = int2hex(mod->text_vma, pto); 
 			*pto++ = ',';
 			if ( !(pfrom = strrchr(mod->name,'/')) )
 				pfrom = mod->name;
@@ -1180,7 +1190,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		if ( psectsyms && *psectsyms ) {
 			pto    = remcomOutBuffer;
 			*pto++ = 'm';
-			pto    = intToHex((int)(*psectsyms)->value.ptv, pto); 
+			pto    = int2hex((int)(*psectsyms)->value.ptv, pto); 
 			*pto++ = ',';
 			pfrom  = (*psectsyms)->name;
 			if ( strlen(pfrom) > BUFMAX - 15 )
@@ -1195,6 +1205,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
 	  break;
 
+		/* T<tid>             -- is thread <tid> alive? */
 	  case 'T':
 		{
 		rtems_id tid;
@@ -1207,12 +1218,34 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		}	
 	  break;
 
+		/* X<addr>,<len>:<bb>  -- binary memory write */
+	  case 'X':
+		if (   !hex2int(&ptr,&addr)
+			|| ',' != *ptr++
+			|| !hex2int(&ptr,&len)
+			|| ':' != *ptr++ ) {
+			break; /* protocol error */
+		}
+		if ( 0 == setjmp(remcomEnv) ) {
+			for ( i=0; i<len; i++ ) {
+				if ( 0x7d == *ptr )
+					*++ptr ^= 0x20;
+				((volatile char*)addr)[i] = *((volatile char*)ptr)++;
+			}
+			strcpy(remcomOutBuffer,"OK");
+		} else {
+	      	strcpy (remcomOutBuffer, "E03");
+	      	debug_error ("%s\n","bus error");
+		}
+	  break;
+
+		/* z<type>,<addr>,<len>   -- remove/insert <type> breakpoint at <addr> */
 	  case 'z':
 	  case 'Z':
 		{
 		char *op = ptr++-1;
-		if (   ',' != *ptr++ || !hexToInt(&ptr,&addr)
-            || ',' != *ptr++ || !hexToInt(&ptr,&len) 
+		if (   ',' != *ptr++ || !hex2int(&ptr,&addr)
+            || ',' != *ptr++ || !hex2int(&ptr,&len) 
 			)
 		break;
 
@@ -1342,7 +1375,7 @@ void blah()
 {
 	while (1) {
 		sleep(8);
-		asm volatile("sc");
+		BREAKPOINT();
 	}
 	rtems_task_delete(RTEMS_SELF);
 }
@@ -1382,18 +1415,7 @@ _cexpModuleInitialize(void *h)
     blahaddr.sin_family = AF_INET;
     blahaddr.sin_port   = htons(RTEMS_GDB_PORT);
 
-    {
-      /* Initialize the CRC table and the decoding table. */
-	int i, j;
-	unsigned int c;
-                                                                                                                                                         
-	for (i = 0; i < 256; i++) {
-		for (c = i << 24, j = 8; j > 0; --j)
-			c = c & 0x80000000 ? (c << 1) ^ 0x04c11db7 : (c << 1);
-		crc32_table[i] = c;
-	}
-    }
-
+	crc32_init(crc32_table);
  	rtems_debug_start(40);
 }
 

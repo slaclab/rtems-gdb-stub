@@ -6,7 +6,7 @@
 #
 
 # C source names, if any, go here -- minus the .c
-C_PIECES=rtems-stub rtems-gdb-stub-ppc-shared
+C_PIECES=rtems-stub rtems-gdb-stub-i386
 C_FILES=$(C_PIECES:%=%.c)
 C_O_FILES=$(C_PIECES:%=${ARCH}/%.o)
 

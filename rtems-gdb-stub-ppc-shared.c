@@ -25,6 +25,7 @@ typedef struct FrameRec_ {
 
 #define get_tcb(tid) rtems_gdb_get_tcb_dispatch_off(tid)
 
+/* cf. COMMON_UISA_REGS & friends in gdb/rs6000-tdep.c */
 #define GPR0_OFF  (0)
 #define FPR0_OFF  (32*4)
 #define PC___OFF  (32*4+32*8+4*0)
