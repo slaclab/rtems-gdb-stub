@@ -19,7 +19,7 @@ static inline void BREAKPOINT()
 	asm volatile("int3");
 }
 
-#include "rtems-gdb-stub.h"
+#include "rtems-gdb-stubP.h"
 
 /* GDB-6.2.1 / i386 has no frame_align method and doesn't honour
  * the red-zone :-(

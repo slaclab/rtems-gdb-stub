@@ -19,7 +19,7 @@ static inline void BREAKPOINT()
 	asm volatile("sc");
 }
 
-#include "rtems-gdb-stub.h"
+#include "rtems-gdb-stubP.h"
 
 #define USE_GDB_REDZONE
 

@@ -6,7 +6,7 @@
 #
 
 # C source names, if any, go here -- minus the .c
-C_PIECES=rtems-stub $(STUB_$(RTEMS_CPU))
+C_PIECES=rtems-stub $(STUB_$(RTEMS_CPU)) rtems-stub.modini
 C_FILES=$(C_PIECES:%=%.c)
 C_O_FILES=$(C_PIECES:%=${ARCH}/%.o)
 
@@ -33,6 +33,8 @@ OBJS=$(C_O_FILES) $(CC_O_FILES) $(S_O_FILES)
 # If it has a '.obj' extension, a loadable module is built.
 
 PGMS=${ARCH}/rtems-gdb-stub.obj
+LIBNAME=librtems-gdb-stub.a
+LIB=$(ARCH)/$(LIBNAME)
 
 #  List of RTEMS Classic API Managers to be included in the application
 #  goes here. Use:
@@ -51,7 +53,7 @@ endif
 include $(RTEMS_MAKEFILE_PATH)/Makefile.inc
 
 include $(RTEMS_CUSTOM)
-include $(RTEMS_ROOT)/make/leaf.cfg
+include $(RTEMS_ROOT)/make/lib.cfg
 
 #
 # (OPTIONAL) Add local stuff here using +=
@@ -82,7 +84,7 @@ LDFLAGS   +=
 CLEAN_ADDITIONS += 
 CLOBBER_ADDITIONS +=
 
-all:	${ARCH} $(SRCS) $(PGMS)
+all:	${ARCH} $(SRCS) $(PGMS) $(LIB)
 
 #How to make a relocatable object
 $(filter %.obj, $(PGMS)): ${OBJS}
@@ -96,6 +98,14 @@ ifdef XSYMS
 	$(XSYMS) $(@:%.exe=%.$(ELFEXT)) $(@:%.exe=%.sym)
 endif
 endif
+
+# doesn't work if we define this just after OBJS= :-(
+# must be after inclusion of RTEMS_CUSTOM
+$(LIB): OBJS=$(filter-out %.modini.o,$(OBJS))
+
+$(LIB): $(OBJS)
+	$(make-library)
+
 
 ifndef RTEMS_SITE_INSTALLDIR
 RTEMS_SITE_INSTALLDIR = $(PROJECT_RELEASE)

@@ -76,7 +76,7 @@ post_and_suspend(RtemsDebugMsg msg);
 #define STATIC
 
 /*  debug !=  0 prints ill-formed commands in valid packets & checksum errors */ 
-volatile int rtems_remote_debug = DEBUG_SCHED | DEBUG_SLIST | DEBUG_STACK;
+volatile int rtems_remote_debug = 0 /* | DEBUG_SCHED | DEBUG_SLIST | DEBUG_STACK */;
 
 /* Configuration Defs    */
 #define CTRLC             3
@@ -700,15 +700,16 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		goto cleanup;
 	}
 
-    /* create socket */
-    rtems_gdb_sd = socket(PF_INET, SOCK_STREAM, 0);
-	if ( rtems_gdb_sd < 0 ) {
-		perror("GDB daemon: socket");
-		goto cleanup;
-	}
 	{
     int                arg = 1;
     struct sockaddr_in srv; 
+
+      /* create socket */
+      rtems_gdb_sd = socket(PF_INET, SOCK_STREAM, 0);
+	  if ( rtems_gdb_sd < 0 ) {
+		perror("GDB daemon: socket");
+		goto cleanup;
+	  }
 
       setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_KEEPALIVE, &arg, sizeof(arg));
       setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_REUSEADDR, &arg, sizeof(arg));
@@ -721,11 +722,12 @@ rtems_gdb_daemon (rtems_task_argument arg)
         perror("GDB daemon: bind");
 		goto cleanup;
       };
-    }
-	if ( listen(rtems_gdb_sd, 1) ) {
+	  if ( listen(rtems_gdb_sd, 1) ) {
 		perror("GDB daemon: listen");
 		goto cleanup;
-	}
+	  }
+    }
+
 	if (rtems_gdb_tgt_install_ehandler(1))
 		goto cleanup;
 	ehandler_installed=1;
@@ -1280,22 +1282,6 @@ rtems_gdb_start(int pri)
 	blah_tid = rtems_gdb_thread_helper("blah", 200, RTEMS_MINIMUM_STACK_SIZE, blah, 0);
 #endif
 	return !rtems_gdb_tid;
-}
-
-int
-_cexpModuleFinalize(void *h)
-{
-	if ( rtems_gdb_tid ) {
-		fprintf(stderr,"GDB daemon still running; refuse to unload\n");
-		return -1;
-	}
-	return 0;
-}
-
-void
-_cexpModuleInitialize(void *h)
-{
- 	rtems_gdb_start(40);
 }
 
 int
