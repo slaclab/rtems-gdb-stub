@@ -44,7 +44,6 @@ Thread_Control		*tcb = 0;
 
 #define FRAME_SZ (((EXCEPTION_FRAME_END+1200+15)&~15)>>2)
 
-/* EABI alignment req */
 
 typedef union GdbStackFrameU_ *GdbStackFrame;
 
@@ -54,7 +53,9 @@ typedef union GdbStackFrameU_ {
 		unsigned long lrroom[4];
 	} stack;
 	GdbStackFrame next;
-} GdbStackFrameU __attribute__((aligned(16)));
+} GdbStackFrameU
+/* EABI alignment req */
+__attribute__((aligned(16)));
 
 static GdbStackFrameU savedStack[NUM_FRAMES] = {{{{0}}}};
 static GdbStackFrame freeList = 0;
@@ -373,6 +374,9 @@ Frame sp;
 
 	asm volatile ("mr %0,1":"=r"(sp));
 
+printk("OLD BOS %x -> %x\n",sp,  *(unsigned long*)sp);
+printk("OLD TOS %x -> %x\n",top, *(unsigned long*)top);
+
 	/* fixup the frame pointers */
 	for (fix = sp; fix < top; ) {
 		fix->up = RELOC(fix->up);
@@ -381,6 +385,12 @@ Frame sp;
 	memcpy(RELOC(sp), sp, (unsigned)top - (unsigned)sp);
 	/* switch to new stack */
 	asm volatile("mr 1,%0"::"r"(RELOC(sp)):"memory");
+
+/* DEBUG: purge the old region; make sure it works */
+memset((void*)sp,0,(unsigned)top - (unsigned)sp);
+
+printk("NEW BOS %x -> %x\n",RELOC(sp),*(unsigned long*)RELOC(sp));
+printk("NEW TOS %x -> %x\n",RELOC(top),*(unsigned long*)RELOC(top));
 }
 
 static void
@@ -414,26 +424,28 @@ unsigned long diff;
 	diff      =  (unsigned long)(stk->stack.frame+FRAME_SZ);
 	diff     -=  (unsigned long)f->GPR1;
 
-{ unsigned sp;
-	asm volatile("mr %0,1":"=r"(sp));
-printk("OLD BOS %x -> %x\n",sp,*(unsigned long*)sp);
-printk("OLD TOS %x -> %x\n",f->GPR1, *(unsigned long*)f->GPR1);
 printk("OLD STK %x\n",stk);
 
 	flip_stack((Frame)f->GPR1, diff);
 
-	memset((void*)sp,0,(unsigned)f->GPR1 - sp);
-
-printk("NEW TOS %x -> %x\n",stk->stack.lrroom, stk->stack.lrroom[0]);
-printk("NEW BOS %x -> %x\n",RELOC(sp),*(unsigned long*)RELOC(sp));
 printk("NEW STK %x\n",stk);
-}
 
-	exception_handler(RELOC(f));
+
+	f = RELOC(f);
+
+	exception_handler(f);
+
+	/* calculate diff again - GPR1 might have magically changed!!
+	 * because gdb can push stuff on the stack (which is the main
+	 * reason why we do the stack switching in the first place)
+	 */
+	diff      =  (unsigned long)f->GPR1;
+	diff     -=  (unsigned long)(stk->stack.frame+FRAME_SZ);
 
 	/* switch back */
-	flip_stack((Frame)stk->stack.lrroom,-diff);
+	flip_stack((Frame)stk->stack.lrroom,diff);
 
+f = RELOC(f);
 printk("BACK resuming at PC %x SP %x\n",f->EXC_SRR0, f->GPR1);
 
 	/* free up the frame -- this context runs until the
@@ -445,7 +457,9 @@ printk("BACK resuming at PC %x SP %x\n",f->EXC_SRR0, f->GPR1);
 	freeList  = stk;
 }
 
+#if 1
 #define exception_handler switch_stack
+#endif
 
 int
 rtems_debug_install_ehandler(int action)
