@@ -54,7 +54,7 @@ include $(RTEMS_ROOT)/make/leaf.cfg
 # (OPTIONAL) Add local stuff here using +=
 #
 
-DEFINES  +=
+DEFINES  += -DHAVE_LIBBSPEXT -DHAVE_CEXP
 CPPFLAGS += -I/opt/rtems4.6.2CD/src/ssrlApps/cexp
 CFLAGS   +=
 
