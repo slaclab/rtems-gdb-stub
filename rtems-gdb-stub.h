@@ -25,8 +25,16 @@ rtems_gdb_tgt_f2r(unsigned char *buf, RtemsDebugMsg msg);
 void
 rtems_gdb_tgt_r2f(RtemsDebugMsg msg, unsigned char *buf);
 
+/* set and read the PC from a (BSP) specific frame.
+ * NOTE: is ILLEGAL to call these routines with a
+ *       NULL frm field in msg.
+ */
+
 void
-rtems_gdb_tgt_set_pc(RtemsDebugMsg msg, int pc);
+rtems_gdb_tgt_set_pc(RtemsDebugMsg msg, unsigned long pc);
+
+unsigned long
+rtems_gdb_tgt_get_pc(RtemsDebugMsg msg);
 
 /* compute offset of a register (gdb number) into the
  * register memory block. Returns register size or -1
@@ -86,5 +94,14 @@ void rtems_debug_handle_exception(int signo);
 void rtems_debug_notify_and_suspend(RtemsDebugMsg);
 
 void rtems_debug_breakpoint();
+
+/* obtain the TCB of a thread.
+ * NOTE that thread dispatching is enabled
+ *      if this operation is successful
+ *      (and disabled if unsuccessful)
+ */
+
+Thread_Control *
+rtems_gdb_get_tcb_dispatch_off(rtems_id tid);
 	
 #endif

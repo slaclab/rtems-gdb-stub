@@ -14,51 +14,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <assert.h>
+
+#define USE_GDB_REDZONE
 
 typedef struct FrameRec_ {
 	struct FrameRec_ *up;
 	unsigned 		  lr;
 } FrameRec, *Frame;
 
-static Thread_Control *
-get_tcb(rtems_id tid)
-{
-Objects_Locations	loc;
-Thread_Control		*tcb = 0;
-
-	if ( !tid )
-		return 0;
-
-	tcb = _Thread_Get(tid, &loc);
-
-    if (OBJECTS_LOCAL!=loc || !tcb) {
-		if (tcb)
-			_Thread_Enable_dispatch();
-        fprintf(stderr,"Id %x not found on local node\n",tid);
-    }
-	return tcb;
-}
-
-/* max number of simultaneously stopped threads */
-#define NUM_FRAMES	40
-
-#define FRAME_SZ (((EXCEPTION_FRAME_END+1200+15)&~15)>>2)
-
-
-typedef union GdbStackFrameU_ *GdbStackFrame;
-
-typedef union GdbStackFrameU_ {
-	struct {
-		unsigned long frame[FRAME_SZ];
-		unsigned long lrroom[4];
-	} stack;
-	GdbStackFrame next;
-} GdbStackFrameU
-/* EABI alignment req */
-__attribute__((aligned(16)));
-
-static GdbStackFrameU savedStack[NUM_FRAMES] = {{{{0}}}};
-static GdbStackFrame freeList = 0;
+#define get_tcb(tid) rtems_gdb_get_tcb_dispatch_off(tid)
 
 #define GPR0_OFF  (0)
 #define FPR0_OFF  (32*4)
@@ -84,8 +49,12 @@ static BpntRec bpnts[NUM_BPNTS] = {{0}};
 #define TRAP(no) (0x0ce00000 + ((no)&0xffff)) /* twi 7,0,no */
 #define TRAPNO(opcode) ((int)(((opcode) & 0xffff0000) == TRAP(0) ? (opcode)&0xffff : -1))
 
+#ifndef USE_GDB_REDZONE
 static void
 switch_stack(RtemsDebugMsg m);
+#else
+#define switch_stack(m) rtems_debug_notify_and_suspend(m)
+#endif
 
 static inline unsigned long
 do_patch(volatile unsigned long *addr, unsigned long val)
@@ -221,8 +190,6 @@ Thread_Control *tcb = 0;
 
 static void (*origHandler)()=0;
 
-#define RELOC(ptr) ((void*)((diff)+(unsigned long)(ptr)))
-
 static void
 exception_handler(BSP_Exception_frame *f)
 {
@@ -262,7 +229,7 @@ printk("\n");
 
 		case ASM_PROG_VECTOR     :
 			/* did we run into a soft breakpoint ? */
-			msg.sig = TRAPNO(*(volatile unsigned long*)f->EXC_SRR0) < 0 ? SIGILL : SIGTRAP;
+			msg.sig = TRAPNO(*(volatile unsigned long*)f->EXC_SRR0) < 0 ? SIGILL : SIGCHLD;
 		break;
 
 		case ASM_FLOAT_VECTOR    :
@@ -274,7 +241,7 @@ printk("\n");
 		break;
 
 		case ASM_SYS_VECTOR      :
-			msg.sig = SIGTRAP;
+			msg.sig = SIGCHLD;
 		break;
 
 		case ASM_TRACE_VECTOR    :
@@ -329,14 +296,9 @@ printk("\n");
         return;
 	} else {
 
-		if ( ! rtems_gdb_break_tid || rtems_gdb_break_tid == msg.tid ) {
-		
-			switch_stack(&msg);
-
-		} else {
-			/* this thread ignores the breakpoint */
-			msg.contSig = SIGCONT;
-		}
+		switch_stack(&msg);
+printk("Resumed from exception; sig %i, GPR1 0x%08x PC 0x%08x LR 0x%08x\n",
+			msg.contSig, msg.frm->GPR1, msg.frm->EXC_SRR0, msg.frm->EXC_LR);
 
 		/* resuming; we might have to step over a breakpoint */
 		if ( (stepOverState.trapno = TRAPNO(*(volatile unsigned long *)f->EXC_SRR0)) >= 0 ) {
@@ -369,6 +331,31 @@ printk("\n");
 
 	origHandler(f);
 }
+
+#ifndef USE_GDB_REDZONE
+
+/* max number of simultaneously stopped threads */
+#define NUM_FRAMES	40
+
+#define FRAME_SZ (((EXCEPTION_FRAME_END+1200+15)&~15)>>2)
+
+#define RELOC(ptr) ((void*)((diff)+(unsigned long)(ptr)))
+
+typedef union GdbStackFrameU_ *GdbStackFrame;
+
+typedef union GdbStackFrameU_ {
+	struct {
+		unsigned long frame[FRAME_SZ];
+		unsigned long lrroom[4];
+	} stack;
+	GdbStackFrame next;
+} GdbStackFrameU
+/* EABI alignment req */
+__attribute__((aligned(16)));
+
+static GdbStackFrameU savedStack[NUM_FRAMES] = {{{{0}}}};
+static GdbStackFrame freeList = 0;
+
 
 static void 
 flip_stack(Frame top, long diff)
@@ -460,9 +447,6 @@ printk("BACK resuming at PC %x SP %x\n",m->frm->EXC_SRR0, m->frm->GPR1);
 	stk->next = freeList;
 	freeList  = stk;
 }
-
-#if 0
-#define exception_handler switch_stack
 #endif
 
 int
@@ -472,9 +456,11 @@ int rval = 0;
 rtems_unsigned32 flags;
 
 	if ( action ) {
+#ifndef USE_GDB_REDZONE
 		/* initialize stack frame list */
 		for ( freeList = savedStack + (NUM_FRAMES-1); freeList > savedStack; freeList-- )
 			(freeList-1)->next = freeList;
+#endif
 	}
 
 	rtems_interrupt_disable(flags);
@@ -505,15 +491,17 @@ rtems_unsigned32 flags;
 }
 
 void
-rtems_gdb_tgt_set_pc(RtemsDebugMsg msg, int pc)
+rtems_gdb_tgt_set_pc(RtemsDebugMsg msg, unsigned long pc)
 {
-Thread_Control *tcb;
-	if ( msg->frm ) {
-		msg->frm->EXC_SRR0 = pc;
-	} else if ( (tcb = get_tcb(msg->tid)) ) {
-		tcb->Registers.pc = pc;
-		_Thread_Enable_dispatch();
-	}
+	assert( msg->frm );
+	msg->frm->EXC_SRR0 = pc;
+}
+
+unsigned long
+rtems_gdb_tgt_get_pc(RtemsDebugMsg msg)
+{
+	assert( msg->frm );
+	return msg->frm->EXC_SRR0;
 }
 
 int
@@ -595,4 +583,14 @@ Thread_Control *tcb;
 		return 0;
 	}
 	return -1;
+}
+
+int faul()
+{
+Frame sp;
+unsigned long lr;
+	asm volatile("mr %0, 1; mflr %1":"=r"(sp),"=r"(lr));
+	printf("LR 0x%08x; SP 0x%08x; *SP 0x%08x; **SP 0x%08x\n",
+		lr, sp, sp->up, sp->up->up);
+	return sp;
 }

@@ -169,6 +169,9 @@ static inline void flushDebugChars()
 /* FORWARD DECLARATIONS */
 /************************/
 
+static int
+pendSomethingHappening(RtemsDebugMsg *, int, char*);
+
 /************************************************************************/
 /* BUFMAX defines the maximum number of characters in inbound/outbound buffers*/
 /* at least NUMREGBYTES*2 are needed for register packets */
@@ -192,7 +195,22 @@ static inline void flushDebugChars()
 
 static volatile char initialized=0;  /* boolean flag. != 0 means we've been initialized */
 
-static rtems_id gdb_pending_id = 0;
+STATIC rtems_id gdb_pending_id = 0;
+
+int semacount = 0;
+
+static inline void SEMA_INC()
+{
+	semacount++;
+}
+
+static inline void SEMA_DEC()
+{
+unsigned long flags;
+	rtems_interrupt_disable(flags);
+	semacount--;
+	rtems_interrupt_enable(flags);
+}
 
 int     rtems_remote_debug = 4;
 /*  debug >  0 prints ill-formed commands in valid packets & checksum errors */ 
@@ -215,8 +233,6 @@ static CdllNodeRec anchor   = { &anchor, &anchor };
 
 /* list of 'dead' threads that we refuse to restart */
 static CdllNodeRec cemetery = { &cemetery, &cemetery };
-
-#define ANCHOR ((RtemsDebugMsg)&anchor)
 
 static RtemsDebugMsg
 threadOnListBwd(CdllNode list, rtems_id tid)
@@ -463,29 +479,42 @@ volatile rtems_id  rtems_gdb_tid       = 0;
 volatile int       rtems_gdb_sd        = -1;
 volatile rtems_id  rtems_gdb_break_tid = 0;
 
+STATIC RtemsDebugMsg	theDummy = 0;
+STATIC unsigned long    dummy_frame_pc;
+
+static volatile int      waiting = 0;
+
 static void sowake(struct socket *so, caddr_t arg)
 {
 rtems_status_code sc;
 
-	if ( *(int*)arg ) {
+	if ( waiting ) {
 		sc = rtems_semaphore_flush(gdb_pending_id);
 	}
 
 }
 
-static void cleanup_connection()
+static void detach_all_tasks()
 {
-struct sockwakeup wkup = {0};
-RtemsDebugMsg     msg;
-
-	if (rtems_remote_debug > 1)
-		printf("Releasing connection\n");
+RtemsDebugMsg msg;
 
 	rtems_gdb_tgt_remove_all_bpnts();
 
 	/* detach all tasks */
 	while ( (msg=getFirstMsg(0)) )
 		task_resume(msg, SIGCONT);
+
+	rtems_gdb_break_tid = 0;
+}
+
+static void cleanup_connection()
+{
+struct sockwakeup wkup = {0};
+
+	if (rtems_remote_debug > 1)
+		printf("Releasing connection\n");
+
+	detach_all_tasks();
 
 	/* make sure the callback is removed */
     setsockopt(fileno(rtems_gdb_strm), SOL_SOCKET, SO_RCVWAKEUP, &wkup, sizeof(wkup));
@@ -564,6 +593,11 @@ static  RtemsDebugMsgRec  currentEl = {{&currentEl.node,&currentEl.node},0};
 
 static  rtems_id        dummy_tid = 0;
 
+static int unAttachedCmd(int ch)
+{
+	return 'H' == ch || 'm'==ch || 'd' == ch || 'D' == ch
+           || 'q' == ch;
+}
 
 /*
  * This function does all command processing for interfacing to gdb.
@@ -576,7 +610,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
   const char        *pfrom;
   char              *regbuf = 0;
   int               sd,regno,i,j;
-  RtemsDebugMsg     msg, current = &currentEl;
+  RtemsDebugMsg     msg, current = 0;
   rtems_status_code sc;
   rtems_id          *tid_tab = calloc(1,sizeof(rtems_id)), tid;
   char				*extrabuf = malloc(EXTRABUFSZ+15);
@@ -584,7 +618,6 @@ rtems_gdb_daemon (rtems_task_argument arg)
   int               ehandler_installed=0;
   CexpModule		mod   = 0;
   CexpSym           *psectsyms = 0;
-  volatile int      waiting = 0;
 
   /* startup / initialization */
   {
@@ -642,7 +675,16 @@ rtems_gdb_daemon (rtems_task_argument arg)
   while (initialized) {
 
 	/* synchronize with dummy task */
-	current = getFirstMsg(1);
+	if ( !theDummy ) {
+		getFirstMsg(1);
+		assert( theDummy );
+	}
+	dummy_frame_pc = rtems_gdb_tgt_get_pc( theDummy );
+#ifndef ONETHREAD_TEST
+	current = theDummy;
+#else
+	current = 0;
+#endif
 
 	{
 	struct sockaddr_in a;
@@ -653,7 +695,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		goto cleanup;
 	}
     wkup.sw_pfn = sowake;
-    wkup.sw_arg = (caddr_t)&waiting;
+    wkup.sw_arg = (caddr_t)0;
     setsockopt(sd, SOL_SOCKET, SO_RCVWAKEUP, &wkup, sizeof(wkup));
 	}
 	if ( !(rtems_gdb_strm = fdopen(sd, "r+")) ) {
@@ -662,38 +704,40 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		goto cleanup;
 	}
 
-	while (1) {
+	while ( (ptr = getpacket()) ) {
 
-      remcomOutBuffer[0] = 0;
-
-	ptr = getpacket();
-
-if (!ptr) {
-	printf("GDB DEAD\n");
-	goto cleanup;
-}
+    remcomOutBuffer[0] = 0;
 
 	if (rtems_remote_debug > 2) {
 		printf("Got packet '%c' \n", *ptr);
 	}
+
+	if ( current || unAttachedCmd(*ptr) ) {
 
     switch (*ptr++)
 	{
 	default:
 	  remcomOutBuffer[0] = 0;
 	  break;
+
 	case '?':
-	  remcomOutBuffer[0] = 'S';
-	  remcomOutBuffer[1] = hexchars[current->sig >> 4];
-	  remcomOutBuffer[2] = hexchars[current->sig % 16];
-	  remcomOutBuffer[3] = 0;
+	  sprintf(remcomOutBuffer,"T%02xthread:%08x;",current->sig, current->tid);
 	  break;
+
 	case 'd':
 	  rtems_remote_debug = !(rtems_remote_debug);	/* toggle debug flag */
 	  break;
+
 	case 'D':
-      putpacket("OK");
-	  goto release_connection;
+      strcpy(remcomOutBuffer,"OK");
+#ifndef ONETHREAD_TEST
+	  detach_all_tasks();
+	  current = 0;
+	  rtems_gdb_break_tid = 0;
+#else
+	  goto cleanup_connection();
+#endif
+	break;
 
 	case 'g':		/* return the value of the CPU registers */
 	  if (!havestate(current))
@@ -716,6 +760,7 @@ if (!ptr) {
 		if ( rtems_remote_debug ) {
 			printf("New 'H%c' thread id set: 0x%08x\n",*ptr,tid);
 		}
+#ifndef ONETHREAD_TEST
 	  	if ( 'c' == *ptr ) {
 			/* We actually have slightly different semantics.
 			 * In our case, this TID tells us whether we break
@@ -736,6 +781,24 @@ if (!ptr) {
 				break;
 			current = task_switch_to(current, tid);
 	  	}
+#else
+		if ( rtems_gdb_break_tid && tid != rtems_gdb_break_tid ) {
+			strcpy(remcomOutBuffer,"E0D");
+		} else if ( !current ) {
+			/* "attach" */
+			if ( tid ) {
+				rtems_gdb_break_tid = tid;
+				current = task_switch_to( 0, tid );
+			} else {
+				/* wait for target */
+				if ( pendSomethingHappening(&current, tid, remcomOutBuffer) < 0 ) {
+					/* daemon killed */
+					goto release_connection;
+				}
+
+			}
+		}
+#endif
 	  }
     break;
 
@@ -794,67 +857,47 @@ if (!ptr) {
 
 	case 's': /* trace */
 	case 'c':
-		if ( hexToInt(&ptr, &i) ) /* optional addr arg */
-			rtems_gdb_tgt_set_pc(current, i);
+		{
+		int contsig = 's' == *(ptr-1) ? SIGTRAP : SIGCONT;
 
-		tid     = current->tid;
+		if ( hexToInt(&ptr, &i) ) { /* optional addr arg */
+			if ( current ) {
+				if ( !current->frm ) {
+					/* refuse if we don't have a 'real' frame */
+					strcpy(remcomOutBuffer,"E0D");
+					break;
+				}
+				rtems_gdb_tgt_set_pc(current, i);
+			}
+		}
 
-		i   = task_resume( current, 's' == *(ptr-1) ? SIGTRAP : SIGCONT ); 
+		if ( current ) {
+			tid  = current->tid;
 
-		if ( 0 == i )
-			current = 0;
+			i   = task_resume( current, contsig );
+		} else {
+			i   = 0;
+			tid = rtems_gdb_break_tid;
+		}
+		}
 
 		if ( -2 == i ) {
 			/* target doesn't know how to start single-stepping on
-			 * a suspended thread
+			 * a suspended thread (which has no real frame)
 			 */
 			strcpy(remcomOutBuffer,"E0D");
 			break;
 		}
+		/* FALL THRU */
 
-		/* check if there's another message pending
-		 * wait only if we succeeded in resuming the
-		 * current thread!
-         */
 
-		/* tiny chances for a race condition here -- if they hit the
-		 * button before we set the flag
-		 */
-		waiting = 1;
-		msg = getFirstMsg( 0 == current );
-		waiting = 0;
+		if ( 0 == i )
+			current = 0;
 
-		if ( !initialized ) {
-			printf("Daemon killed;\n");
+		if ( pendSomethingHappening(&current, tid, remcomOutBuffer) < 0 )
+			/* daemon killed */
 			goto release_connection;
-		}
 
-		if ( msg ) {
-			current = msg;
-		} else {
-			/* no new message; two possibilities:
-			 * a) current == 0 which means that we
-			 *    successfully resumed and hence waited
-			 *    -> wait interrupted.
-			 * b) current != 0 -> no wait and no other
-			 *    thread pending in queue
-			 */
-
-			if ( ! current ) {
-				printf("net event\n");
-				/* should be '\003' */
-				getDebugChar();
-				/* stop the current thread */
-  				current = task_switch_to(current, tid);
-			}
-			/* else
-			 * couldn't restart the thread. It's dead
-			 * or was already suspended; since there were
-			 * no messages pending, we return the old signal status
-			 */
-		}
-
-		sprintf(remcomOutBuffer,"T%02xthread:%08x;",current->sig, current->tid);
 	break;
 
 	case 'P':
@@ -1083,14 +1126,16 @@ if (!ptr) {
 	  break;
 
 	}			/* switch */
+	}
 
       /* reply to the request */
       if (putpacket (remcomOutBuffer))
 		goto release_connection;
-  }
+  } /* interpreter loop */
 release_connection:
   /* make sure attached thread continues */
-  task_resume( current, SIGCONT );
+  if ( current )
+  	task_resume( current, SIGCONT );
   cleanup_connection();
 
   }
@@ -1182,11 +1227,23 @@ cleanup:
 	return rval;
 }
 
+void blah()
+{
+	while (1) {
+		sleep(8);
+		asm volatile("sc");
+	}
+	rtems_task_delete(RTEMS_SELF);
+}
+
 int
 rtems_debug_start(int pri)
 {
 
 	rtems_gdb_tid = thread_helper("GDBd", 20, 20000+RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, 0);
+#if 0
+	thread_helper("blah", 200, RTEMS_MINIMUM_STACK_SIZE, blah, 0);
+#endif
 
 	return !rtems_gdb_tid;
 }
@@ -1236,6 +1293,16 @@ task_resume(RtemsDebugMsg msg, int sig)
 {
 rtems_status_code sc = -1;
 	if ( msg->tid ) {
+
+		/* never really resume the dummy tid */
+		if (   msg->tid == dummy_tid ) {
+		    if ( dummy_frame_pc == rtems_gdb_tgt_get_pc( msg ) ) {
+				theDummy = msg;
+				return 0;
+			} else {
+				theDummy = 0;
+			}
+		}
 		/* if we attached to an already sleeping thread, don't resume
 		 * don't resume DEAD threads that were suspended due to memory
 		 * faults etc. either
@@ -1254,8 +1321,10 @@ rtems_status_code sc = -1;
 	   *        made by tgt_single_step()...
 				|| 0 == rtems_gdb_tgt_single_step(msg)
 	   */
-			   )
+			   ) {
+				printf("Resuming 0x%08x with sig %i\n",msg->tid, msg->contSig);
 				sc = rtems_task_resume(msg->tid);
+			}
 			return RTEMS_SUCCESSFUL == sc ? 0 : -2;
 		} else {
 			/* add to cemetery if not there already */
@@ -1273,8 +1342,15 @@ task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 {
 printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
 
-	if ( cur )
+	if ( cur ) {
+		if ( cur->tid == new_tid )
+			return cur;
 		task_resume(cur, SIGCONT);
+	}
+
+	if ( new_tid == dummy_tid && theDummy ) {
+		return theDummy;
+	}
 
 	cur = &currentEl;
 
@@ -1310,6 +1386,7 @@ printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
 						cdll_splerge_tail(&t->node, t->node.p);
 						rtems_interrupt_enable(flags);
 						assert( RTEMS_SUCCESSFUL == rtems_semaphore_obtain( gdb_pending_id, RTEMS_NO_WAIT, RTEMS_NO_TIMEOUT ) );
+						SEMA_DEC();
 						cur = t;
 					} else if ( ( t = threadOnListBwd(&cemetery, new_tid) ) ) {
 						cur = t;
@@ -1320,8 +1397,14 @@ printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
 			default:
 				cur->tid = 0;
 				rtems_error(sc, "suspending target thread 0x%08x failed", new_tid);
+				/* thread might have gone away; attach to helper */
+				cur = theDummy; theDummy = 0;
 			break;
 		}
+	}
+	if ( cur->tid == dummy_tid ) {
+		assert( !theDummy );
+		theDummy = cur;
 	}
 return cur;
 }
@@ -1331,11 +1414,51 @@ void rtems_debug_notify_and_suspend(RtemsDebugMsg msg)
 {
 	cdll_init_el(&msg->node);
 
-		/* hook into the list */
+#ifndef ONETHREAD_TEST
+	if ( SIGCHLD == msg->sig ) {
+		if ( rtems_gdb_break_tid && rtems_gdb_break_tid != msg->tid ) {
+		/* breakpoint hit; only stop if thread matches */
+			msg->contSig = SIGCONT;
+			return;
+		} else {
+			msg->sig = SIGTRAP;
+		}
+	}
+	/* hook into the list */
 	cdll_splerge_tail(&anchor, &msg->node);
 
 	/* notify the daemon that a stopped thread is available */
 	rtems_semaphore_release(gdb_pending_id);
+	SEMA_INC();
+#else
+	switch ( msg->sig ) {
+		case SIGCHLD:
+			/* breakpoint hit; only stop if thread matches */
+			if ( !rtems_gdb_break_tid )
+				rtems_gdb_break_tid = msg->tid;
+			else if ( rtems_gdb_break_tid != msg->tid ) {
+				msg->contSig = SIGCONT;
+				return;
+			}
+			msg->sig = SIGTRAP;
+			
+			/* fall thru */
+		case SIGTRAP: /* single step tracing */
+			/* hook into the list */
+			cdll_splerge_tail(&anchor, &msg->node);
+
+			/* notify the daemon that a stopped thread is available */
+			rtems_semaphore_release(gdb_pending_id);
+			SEMA_INC();
+
+			break;
+
+		default:
+			/* save dead thread in the cemetery */
+			cdll_splerge_tail(&cemetery, &msg->node);
+		break;
+	}
+#endif
 
 	/* hackish but it should work:
 	 * rtems_task_suspend should work for other APIs also...
@@ -1357,6 +1480,7 @@ rtems_status_code	sc;
 			return 0;
 		} else {
 			assert( RTEMS_SUCCESSFUL == sc );
+			SEMA_DEC();
 		}
 	}
 
@@ -1370,7 +1494,98 @@ rtems_status_code	sc;
 
 	if ( !block ) {
 		assert( RTEMS_SUCCESSFUL == rtems_semaphore_obtain( gdb_pending_id, RTEMS_NO_WAIT, RTEMS_NO_TIMEOUT) );
+		SEMA_DEC();
+	}
+	if ( ((RtemsDebugMsg)msg)->tid == dummy_tid ) {
+		assert( !theDummy );
+		theDummy = (RtemsDebugMsg)msg;
 	}
 	return (RtemsDebugMsg)msg;
 }
+
+/* obtain the TCB of a thread.
+ * NOTE that thread dispatching is enabled
+ *      if this operation is successful
+ *      (and disabled if unsuccessful)
+ */
+
+Thread_Control *
+rtems_gdb_get_tcb_dispatch_off(rtems_id tid)
+{
+Objects_Locations	loc;
+Thread_Control		*tcb = 0;
+
+	if ( !tid )
+		return 0;
+
+	tcb = _Thread_Get(tid, &loc);
+
+    if (OBJECTS_LOCAL!=loc || !tcb) {
+		if (tcb)
+			_Thread_Enable_dispatch();
+        fprintf(stderr,"Id %x not found on local node\n",tid);
+    }
+	return tcb;
+}
+
+static int
+pendSomethingHappening(RtemsDebugMsg *pcurrent, int tid, char *buf)
+{
+RtemsDebugMsg msg;
+
+  do {
+	/* check if there's another message pending
+	 * wait only if we succeeded in resuming the
+	 * current thread!
+     */
+
+	/* tiny chances for a race condition here -- if they hit the
+	 * button before we set the flag
+	 */
+
+	waiting = 1;
+	msg = getFirstMsg( 0 == *pcurrent );
+	waiting = 0;
+
+	if ( !initialized ) {
+		printf("Daemon killed;\n");
+		return -1;
+	}
+
+	if ( msg ) {
+		*pcurrent = msg;
+	} else {
+		/* no new message; two possibilities:
+		 * a) current == 0 which means that we
+		 *    successfully resumed and hence waited
+		 *    -> wait interrupted.
+		 * b) current != 0 -> no wait and no other
+		 *    thread pending in queue
+		 */
+
+		if ( ! *pcurrent ) {
+			printf("net event\n");
+			/* should be '\003' */
+			getDebugChar();
+			/* stop the current thread */
+			if ( !tid ) {
+				/* nothing attached yet */
+				strcpy(buf,"X03");
+				return 1;
+			}
+  			*pcurrent = task_switch_to(*pcurrent, tid);
+			(*pcurrent)->sig = SIGINT;
+		}
+		/* else
+		 * couldn't restart the thread. It's dead
+		 * or was already suspended; since there were
+		 * no messages pending, we return the old signal status
+		 */
+	}
+		/* another thread got a signal */
+  } while ( !*pcurrent );
+  sprintf(buf,"T%02xthread:%08x;",(*pcurrent)->sig, (*pcurrent)->tid);
+return 0;
+}
+
 
