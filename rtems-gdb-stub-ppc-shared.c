@@ -84,6 +84,9 @@ static BpntRec bpnts[NUM_BPNTS] = {{0}};
 #define TRAP(no) (0x0ce00000 + ((no)&0xffff)) /* twi 7,0,no */
 #define TRAPNO(opcode) ((int)(((opcode) & 0xffff0000) == TRAP(0) ? (opcode)&0xffff : -1))
 
+static void
+switch_stack(RtemsDebugMsg m);
+
 static inline unsigned long
 do_patch(volatile unsigned long *addr, unsigned long val)
 {
@@ -328,7 +331,8 @@ printk("\n");
 
 		if ( ! rtems_gdb_break_tid || rtems_gdb_break_tid == msg.tid ) {
 		
-			rtems_debug_notify_and_suspend(&msg);
+			switch_stack(&msg);
+
 		} else {
 			/* this thread ignores the breakpoint */
 			msg.contSig = SIGCONT;
@@ -394,7 +398,7 @@ printk("NEW TOS %x -> %x\n",RELOC(top),*(unsigned long*)RELOC(top));
 }
 
 static void
-switch_stack(BSP_Exception_frame *f)
+switch_stack(RtemsDebugMsg m)
 {
 GdbStackFrame volatile stk;
 unsigned long diff;
@@ -422,31 +426,31 @@ unsigned long diff;
 	 */
 
 	diff      =  (unsigned long)(stk->stack.frame+FRAME_SZ);
-	diff     -=  (unsigned long)f->GPR1;
+	diff     -=  (unsigned long)m->frm->GPR1;
 
 printk("OLD STK %x\n",stk);
 
-	flip_stack((Frame)f->GPR1, diff);
+	flip_stack((Frame)m->frm->GPR1, diff);
 
 printk("NEW STK %x\n",stk);
 
+	m = RELOC(m);
+	m->frm = RELOC(m->frm);
 
-	f = RELOC(f);
-
-	exception_handler(f);
+	rtems_debug_notify_and_suspend(m);
 
 	/* calculate diff again - GPR1 might have magically changed!!
 	 * because gdb can push stuff on the stack (which is the main
 	 * reason why we do the stack switching in the first place)
 	 */
-	diff      =  (unsigned long)f->GPR1;
+	diff      =  (unsigned long)m->frm->GPR1;
 	diff     -=  (unsigned long)(stk->stack.frame+FRAME_SZ);
 
 	/* switch back */
 	flip_stack((Frame)stk->stack.lrroom,diff);
 
-f = RELOC(f);
-printk("BACK resuming at PC %x SP %x\n",f->EXC_SRR0, f->GPR1);
+m = RELOC(m); m->frm = RELOC(m->frm);
+printk("BACK resuming at PC %x SP %x\n",m->frm->EXC_SRR0, m->frm->GPR1);
 
 	/* free up the frame -- this context runs until the
 	 * frame is popped without interruption, hence adding
@@ -457,7 +461,7 @@ printk("BACK resuming at PC %x SP %x\n",f->EXC_SRR0, f->GPR1);
 	freeList  = stk;
 }
 
-#if 1
+#if 0
 #define exception_handler switch_stack
 #endif
 
