@@ -14,7 +14,6 @@ typedef BSP_Exception_frame *RtemsDebugFrame;
 /* 32 GPRs, 32 FPRs, PC, PS (msr??), CR, LR, CTR, XER, FPSCR */
 #define NUMREGBYTES (32*4+32*8+2*4+5*4)
 
-
 static inline void BREAKPOINT()
 {
 	asm volatile("sc");

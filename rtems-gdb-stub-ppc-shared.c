@@ -14,7 +14,7 @@
 
 typedef struct FrameRec_ {
 	struct FrameRec_ *up;
-	void		 *lr;
+	unsigned 		  lr;
 } FrameRec, *Frame;
 
 static Thread_Control *
@@ -46,6 +46,27 @@ Thread_Control		*tcb = 0;
 #define XER__OFF  (32*4+32*8+4*6)
 #define FPSCR_OFF (32*4+32*8+4*7)
 
+int
+rtems_gdb_tgt_regoff(int regno, int *poff)
+{
+*poff = 0;
+	if ( regno < 0 || regno > 70 )
+		return -1;
+	if ( regno < 32 ) {
+		*poff += regno*4;
+		return 4;
+	}
+	*poff += 32*4;
+	regno -= 32;
+	if ( regno < 32 ) {
+		*poff += regno*8;
+		return 8;
+	}
+	regno -= 32;
+	*poff += 32*8 + regno*4;
+	return 4;
+}
+
 /* map exception frame into register array (GDB layout) */
 void
 rtems_gdb_tgt_f2r(unsigned char *buf, RtemsDebugFrame f, rtems_id tid)
@@ -57,12 +78,12 @@ int            deadbeef = 0xdeadbeef, i;
 
 	if ( f ) {
 		memcpy(buf + GPR0_OFF, &f->GPR0, 32*4);
-		memcpy(buf, &f->EXC_SRR0, 4);
-		memcpy(buf, &f->EXC_SRR1, 4);
-		memcpy(buf, &f->EXC_CR,   4);
-		memcpy(buf, &f->EXC_LR,   4);
-		memcpy(buf, &f->EXC_CTR,  4);
-		memcpy(buf, &f->EXC_XER,  4);
+		memcpy(buf + PC___OFF, &f->EXC_SRR0, 4);
+		memcpy(buf + PS___OFF, &f->EXC_SRR1, 4);
+		memcpy(buf + CR___OFF, &f->EXC_CR,   4);
+		memcpy(buf + LR___OFF, &f->EXC_LR,   4);
+		memcpy(buf + CTR__OFF, &f->EXC_CTR,  4);
+		memcpy(buf + XER__OFF, &f->EXC_XER,  4);
 	} else {
 		memcpy(buf + GPR0_OFF, &deadbeef, 4);
 		for ( i = 3*4; i < 13*4; i+=4 )
@@ -78,7 +99,9 @@ int            deadbeef = 0xdeadbeef, i;
 			memcpy(buf + FPSCR_OFF, &fpc->fpscr, 4);
 		}
 		if (!f) {
-			Frame sfr = (Frame)tcb->Registers.gpr1;
+			Frame        sfr = (Frame)tcb->Registers.gpr1;
+			unsigned lrdummy = 0xdeadbeef;
+			unsigned pcdummy = tcb->Registers.pc - 4;
 			if (!sfr->lr)
 				sfr = sfr->up;
 			/* dummy up from the TCB */
@@ -86,7 +109,7 @@ int            deadbeef = 0xdeadbeef, i;
 			memcpy(buf + GPR0_OFF+4*13, &tcb->Registers.gpr13, (32-13)*4);
 			memcpy(buf + LR___OFF,      &sfr->lr,                      4);
 			memcpy(buf + CR___OFF,      &tcb->Registers.cr,            4);
-			memcpy(buf + PC___OFF,      &tcb->Registers.pc,            4);
+			memcpy(buf + PC___OFF,      &pcdummy,                      4);
 			memcpy(buf + PS___OFF,      &tcb->Registers.msr,           4);
 		}
 		_Thread_Enable_dispatch();

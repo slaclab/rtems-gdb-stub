@@ -119,6 +119,16 @@
 #include <errno.h>
 #include <stdlib.h>
 
+#define HAVE_CEXP
+
+#ifdef HAVE_CEXP
+#include <cexp.h>
+/* we do no locking - hope nobody messes with the
+ * module list during a debugging session
+ */
+#include <cexpmodP.h>
+#endif
+
 
 #ifdef __PPC__
 #include "rtems-gdb-stub-ppc-shared.h"
@@ -172,7 +182,7 @@ static inline void flushDebugChars()
 
 #if BUFMAX < 2*NUMREGBYTES
 #  undef  BUFMAX
-#  define BUFMAX 2*NUMREGBYTES+100
+#  define BUFMAX (2*NUMREGBYTES+100)
 #endif
 
 static char initialized=0;  /* boolean flag. != 0 means we've been initialized */
@@ -506,21 +516,30 @@ hexToInt (char **ptr, int *intValue)
   return (numChars);
 }
 
-rtems_id       rtems_gdb_q    = 0;
-rtems_id       rtems_gdb_tid  = 0;
-int            rtems_gdb_sd   = -1;
+volatile rtems_id  rtems_gdb_q    = 0;
+volatile rtems_id  rtems_gdb_tid  = 0;
+volatile int       rtems_gdb_sd   = -1;
 
 static void sowake(struct socket *so, caddr_t arg)
 {
 char ch;
+rtems_status_code sc;
 	printk("..SOWAKE..\n");
 	ch = GDB_NET;
+	sc = rtems_event_send(rtems_gdb_tid, GDB_NET_EVENT);
+	if ( RTEMS_SUCCESSFUL != sc )
+		printk("SOWAKE sc %i\n",sc);
+/*
 	rtems_message_queue_urgent(rtems_gdb_q, &ch, sizeof(ch));
+*/
 }
 
 static void cleanup_connection()
 {
-	/* remove all breakpoints and continue all threads */
+	/* TODO remove all breakpoints */
+
+	/* TODO cleanup message queue  */
+
 	fclose( rtems_gdb_strm );
 	rtems_gdb_strm = 0;
 }
@@ -529,7 +548,7 @@ static int
 havestate(RtemsDebugMsg m)
 {
 	if ( TID_ANY == m->tid || TID_ALL == m->tid ) {
-		strcpy(remcomOutBuffer,"E12");
+		strcpy(remcomOutBuffer,"E16");
 		return 0;
 	}
 	return 1;
@@ -596,9 +615,10 @@ rtems_gdb_daemon (rtems_task_argument arg)
 {
   int stepping;
   int addr, length;
-  char              *ptr, *chpt;
+  char              *ptr, *pto;
+  const char        *pfrom;
   char              *regbuf = 0;
-  int               sd;
+  int               sd,regno,i,j;
   RtemsDebugMsgRec  msg = {0}, current = {0};
   int               msgsize;
   rtems_status_code sc;
@@ -606,6 +626,8 @@ rtems_gdb_daemon (rtems_task_argument arg)
   int               tidx = 0;
   rtems_id          dummy_tid = 0;
   int               ehandler_installed=0;
+  CexpModule		mod   = 0;
+  CexpSym           *psectsyms = 0;
 
   /* startup / initialization */
   {
@@ -638,9 +660,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
       setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_REUSEADDR, &arg, sizeof(arg));
       wkup.sw_pfn = sowake;
       wkup.sw_arg = 0;
-#if 0
       setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_RCVWAKEUP, &wkup, sizeof(wkup));
-#endif
 
       memset(&srv, 0, sizeof(srv));
       srv.sin_family = AF_INET;
@@ -683,8 +703,8 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
 	while (1) {
 
-#if 0
-TODO switch to new task
+#ifdef MSGTEST
+/* TODO switch to new task */
 	if ( RTEMS_SUCCESSFUL !=
          (sc = rtems_message_queue_receive(
             rtems_gdb_q, 
@@ -738,8 +758,28 @@ TODO switch to new task
 
   while (1 == 1)
     {
+	  rtems_event_set evs = 0;
       remcomOutBuffer[0] = 0;
-      ptr = getpacket ();
+
+#if 0
+printf("Entering wait\n");
+      sc = rtems_event_receive(
+			(GDB_NET_EVENT | GDB_KILL_EVENT),
+			(RTEMS_EVENT_ANY | RTEMS_WAIT),
+			RTEMS_NO_TIMEOUT,
+			&evs);
+printf("Got events %x\n",evs);
+#endif
+
+	  if ( GDB_KILL_EVENT & evs ) {
+		printf("GDB daemon killed\n");
+		goto cleanup;
+	  }
+      if ( RTEMS_SUCCESSFUL != sc ) {
+		rtems_error(sc,"Waiting for event");
+		goto cleanup;
+	  }
+      ptr = (GDB_NET_EVENT & evs) ? getpacket() : 0;
 	  if (!ptr) {
 		fprintf(stderr,"Link broken? -- disconnect\n");
 		goto release_connection;
@@ -750,7 +790,7 @@ TODO switch to new task
       switch (*ptr++)
 	{
 	default:
-	  strcpy(remcomOutBuffer,"E10");
+	  strcpy(remcomOutBuffer,"E16");
 	  break;
 	case '?':
 	  remcomOutBuffer[0] = 'S';
@@ -761,12 +801,17 @@ TODO switch to new task
 	case 'd':
 	  rtems_remote_debug = !(rtems_remote_debug);	/* toggle debug flag */
 	  break;
+	case 'D':
+      putpacket("OK");
+	  goto release_connection;
+
 	case 'g':		/* return the value of the CPU registers */
 	  if (!havestate(&current))
 		break;
 	  rtems_gdb_tgt_f2r(regbuf, current.frm, current.tid);
 	  mem2hex ((char *) regbuf, remcomOutBuffer, NUMREGBYTES);
 	  break;
+
 	case 'G':		/* set the value of the CPU registers - return OK */
 	  if (!havestate(&current))
 		break;
@@ -777,18 +822,25 @@ TODO switch to new task
 
     case 'H':
       { rtems_id tid;
-	  	sscanf(ptr+1,"%i",&tid);
+		tid = strtol(ptr+1,0,16);
 	  	if ( 'c' == *ptr ) {
 	  	} else if ( 'g' == *ptr ) {
 	  	}
 		if ( rtems_remote_debug ) {
 			printf("New 'H' thread id set: 0x%08x\n",tid);
 		}
-		if ( TID_ALL == tid || TID_ANY == tid || rtems_gdb_tid == tid )
-			tid = dummy_tid;
-		if ( current.tid == tid )
-			break;
-		task_switch_to(&current, tid);
+#ifdef MSGTEST
+		if ( msg.tid )
+			current = msg;
+		else
+#endif
+		{
+			if ( TID_ALL == tid || TID_ANY == tid || rtems_gdb_tid == tid )
+				tid = dummy_tid;
+			if ( current.tid == tid )
+				break;
+			task_switch_to(&current, tid);
+		}
 	  }
     break;
 
@@ -877,6 +929,20 @@ TODO switch to new task
 	case 'k':		/* do nothing */
 	  break;
 
+	case 'P':
+	  strcpy(remcomOutBuffer,"E16");
+	  if (   !havestate(&current)
+          || !hexToInt(&ptr, &regno)
+          || '=' != *ptr++
+		  || (i = rtems_gdb_tgt_regoff(regno, &j)) < 0 )
+		break;
+		
+	  rtems_gdb_tgt_f2r((char*)regbuf,current.frm,current.tid);
+	  hex2mem (ptr, ((char*)regbuf) + j, i);
+	  rtems_gdb_tgt_r2f(current.frm, current.tid, regbuf);
+	  strcpy (remcomOutBuffer, "OK");
+	  break;
+
 	case 'q':
       if ( !strcmp(ptr,"Offsets") ) {
 		/* ignore; use values from file */
@@ -886,24 +952,76 @@ TODO switch to new task
 			/* TODO get thread snapshot */
 			tid_tab = get_tid_tab(tid_tab);
 		}
-		chpt    = remcomOutBuffer;
+		pto    = remcomOutBuffer;
 		if ( !tid_tab[tidx] ) {
-			strcpy(chpt,"l");
+			strcpy(pto,"l");
 		} else {
-			while ( tid_tab[tidx] && chpt < remcomOutBuffer + sizeof(remcomOutBuffer) - 20 ) {
-				*chpt++ = ',';
-				chpt    = intToHex(tid_tab[tidx++], chpt);
+			while ( tid_tab[tidx] && pto < remcomOutBuffer + sizeof(remcomOutBuffer) - 20 ) {
+				*pto++ = ',';
+				pto    = intToHex(tid_tab[tidx++], pto);
 			}
-			*chpt = 0;
+			*pto = 0;
 			remcomOutBuffer[0]='m';
-printf(">>%s<<\n",remcomOutBuffer);
+		}
+	  } else if ( !strcmp(ptr+1,"CexpFileList") ) {
+	    if ( 'f' == *ptr ) {
+			mod = cexpSystemModule->next;
+		}
+		if ( mod ) {
+			pto    = remcomOutBuffer;
+			*pto++ = 'm';
+			pto    = intToHex(mod->text_vma, pto); 
+			*pto++ = ',';
+			if ( !(pfrom = strrchr(mod->name,'/')) )
+				pfrom = mod->name;
+			else
+				pfrom++;
+			if ( strlen(pfrom) > BUFMAX - 15 )
+				strcpy(remcomOutBuffer,"E24");
+			else
+				strcpy(pto,pfrom);
+			mod = mod->next;
+		} else {
+			strcpy(remcomOutBuffer,"l");
+		}
+#define SECTLIST_STR "CexpSectionList"
+	  } else if ( !strncmp(ptr+1,SECTLIST_STR,strlen(SECTLIST_STR)) ) {
+	    if ( 'f' == *ptr ) {
+			ptr+=1+strlen(SECTLIST_STR);
+			psectsyms = 0;
+			if ( ',' != *ptr || !*(ptr+1) ) {
+				strcpy(remcomOutBuffer,"E16");
+			} else {
+				mod = cexpModuleFindByName(++ptr, CEXP_FILE_QUIET);
+				if ( !mod ) {
+					strcpy(remcomOutBuffer,"E02");
+					break;
+				} else {
+					psectsyms = mod->section_syms;
+					mod = 0;
+				}
+			}
+		}
+		if ( psectsyms && *psectsyms ) {
+			pto    = remcomOutBuffer;
+			*pto++ = 'm';
+			pto    = intToHex((int)(*psectsyms)->value.ptv, pto); 
+			*pto++ = ',';
+			pfrom  = (*psectsyms)->name;
+			if ( strlen(pfrom) > BUFMAX - 15 )
+				strcpy(remcomOutBuffer,"E24");
+			else
+				strcpy(pto,pfrom);
+			psectsyms++;
+		} else {
+			strcpy(remcomOutBuffer,"l");
 		}
 	  }
+
 	  break;
 
 	  case 'T':
 		{
-		rtems_status_code sc;
 		rtems_id tid;
 			strcpy(remcomOutBuffer,"E01");
 			tid = strtol(ptr,0,16);
@@ -921,6 +1039,8 @@ printf(">>%s<<\n",remcomOutBuffer);
     }
   }
 release_connection:
+  /* make sure attached thread continues */
+  task_switch_to(&current, dummy_tid);
   cleanup_connection();
 
   }
@@ -1049,6 +1169,7 @@ rtems_debug_stop()
 char ch=GDB_KILL;
 int  sd;
 	rtems_message_queue_urgent(rtems_gdb_q, &ch, 1);
+	rtems_event_send(rtems_gdb_tid,GDB_KILL_EVENT);
 	sd = rtems_gdb_sd;
 	rtems_gdb_sd = -1;
 	if ( sd >= 0 )
@@ -1058,11 +1179,12 @@ int  sd;
 static void
 task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 {
+printf("SWITCH 0x%08x -> 0x%08x\n", cur->tid, new_tid);
 	if ( cur->tid ) {
 		if ( cur->contSig )
 			*cur->contSig = SIGCONT;
 		/* if we attached to an already sleeping thread, don't resume */
-		if ( cur->frm || SIGSTOP == cur->sig )
+		if ( SIGSTOP == cur->sig || (cur->frm && SIGTRAP == cur->sig) )
 			rtems_task_resume(cur->tid);
 	}
 	memset(cur,0,sizeof(*cur));

@@ -55,7 +55,7 @@ include $(RTEMS_ROOT)/make/leaf.cfg
 #
 
 DEFINES  +=
-CPPFLAGS +=
+CPPFLAGS += -I/opt/rtems4.6.2CD/src/ssrlApps/cexp
 CFLAGS   +=
 
 #
