@@ -794,8 +794,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		/* Detach */
 	case 'D':
       strcpy(remcomOutBuffer,"OK");
-	  goto cleanup_connection;
-	break;
+	  goto release_connection;
 
 	case 'g':		/* read registers */
 	  if (!havestate(current))
@@ -1649,6 +1648,7 @@ RtemsDebugMsg msg;
 	if ( msg ) {
 		*pcurrent = msg;
 	} else {
+		int sig;
 		/* no new message; two possibilities:
 		 * a) current == 0 which means that we
 		 *    successfully resumed and hence waited
@@ -1675,17 +1675,21 @@ RtemsDebugMsg msg;
 				strcpy(buf,"X03");
 				return 1;
 			}
-			(*pcurrent)->sig = SIGINT;
+			sig = SIGINT;
+		} else {
+			/*
+			 * couldn't restart the thread. It's dead
+			 * or was already suspended; since there were
+			 * no messages pending, we return the old signal status
+			 */
+			sig = (*pcurrent)->sig;
 		}
-		/* else
-		 * couldn't restart the thread. It's dead
-		 * or was already suspended; since there were
-		 * no messages pending, we return the old signal status
-		 *
+		/*
 		 * nevertheless, we call 'task_switch_to()' to make
 		 * sure 'tid' is on the stopped list...
 		 */
   		*pcurrent = task_switch_to(*pcurrent, tid);
+		(*pcurrent)->sig = sig;
 	}
 		/* another thread got a signal */
   } while ( !*pcurrent );
