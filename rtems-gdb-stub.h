@@ -5,6 +5,7 @@
 #include "cdll.h"
 
 extern volatile rtems_id rtems_gdb_tid;
+extern volatile rtems_id rtems_gdb_break_tid;
 
 /* install / uninstall exception handler */
 int
@@ -33,6 +34,28 @@ rtems_gdb_tgt_set_pc(RtemsDebugMsg msg, int pc);
  */
 int
 rtems_gdb_tgt_regoff(int regno, int *poff);
+
+/* insert / delete a breakpoint.
+ * If the memory operation fails, the exception handler
+ * should longjmp out of this routine.
+ * 
+ * RETURNS 0 on success, nonzero on failure (e.g., table full)
+ */
+int
+rtems_gdb_tgt_insdel_breakpoint(int doins, int addr, int len);
+
+void
+rtems_gdb_tgt_remove_all_bpnts(void);
+
+/* announce that a frame-less thread should be single-stepped.
+ * We need lowlevel support for this, e.g., to enable a
+ * single step exception in the TCB
+ *
+ * Target may return nonzero to indicate that it doesn't know
+ * how to deal with this.
+ */
+int
+rtems_gdb_tgt_single_step(RtemsDebugMsg msg);
 
 /* this routine is called after exception handler returns. It must
  * call LONGJMP

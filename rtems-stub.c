@@ -459,8 +459,9 @@ hexToInt (char **ptr, int *intValue)
   return (numChars);
 }
 
-volatile rtems_id  rtems_gdb_tid  = 0;
-volatile int       rtems_gdb_sd   = -1;
+volatile rtems_id  rtems_gdb_tid       = 0;
+volatile int       rtems_gdb_sd        = -1;
+volatile rtems_id  rtems_gdb_break_tid = 0;
 
 static void sowake(struct socket *so, caddr_t arg)
 {
@@ -472,10 +473,20 @@ rtems_status_code sc;
 
 static void cleanup_connection()
 {
-	/* TODO remove all breakpoints */
+struct sockwakeup wkup = {0};
+RtemsDebugMsg     msg;
 
-	/* TODO cleanup message queue  */
+	if (rtems_remote_debug > 1)
+		printf("Releasing connection\n");
 
+	rtems_gdb_tgt_remove_all_bpnts();
+
+	/* detach all tasks */
+	while ( (msg=getFirstMsg()) )
+		task_resume(msg, SIGCONT);
+
+	/* make sure the callback is removed */
+    setsockopt(fileno(rtems_gdb_strm), SOL_SOCKET, SO_RCVWAKEUP, &wkup, sizeof(wkup));
 	fclose( rtems_gdb_strm );
 	rtems_gdb_strm = 0;
 }
@@ -687,13 +698,21 @@ rtems_gdb_daemon (rtems_task_argument arg)
     case 'H':
       {
 		tid = strtol(ptr+1,0,16);
-	  	if ( 'c' == *ptr ) {
-	  	} else if ( 'g' == *ptr ) {
-	  	}
 		if ( rtems_remote_debug ) {
-			printf("New 'H' thread id set: 0x%08x\n",tid);
+			printf("New 'H%c' thread id set: 0x%08x\n",*ptr,tid);
 		}
-		{
+	  	if ( 'c' == *ptr ) {
+			/* We actually have slightly different semantics.
+			 * In our case, this TID tells us whether we break
+			 * on this tid only or on any arbitrary one
+			 */
+			/* NOTE NOTE: This currently does NOT work -- GDB inserts
+			rtems_gdb_break_tid = (TID_ALL == tid || TID_ANY == tid) ? 0 : tid;
+			 *            breakpoints prior to sending the thread id :-(
+			 *            maybe we should globally enable breakpoints
+			 *            only when we 'continue' or 'step'
+			 */
+	  	} else if ( 'g' == *ptr ) {
 			if ( (TID_ALL == tid || TID_ANY == tid) )
 				tid = current->tid ? current->tid : dummy_tid;
 			else if ( rtems_gdb_tid == tid )
@@ -701,7 +720,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			if ( current->tid == tid )
 				break;
 			current = task_switch_to(current, tid);
-		}
+	  	}
 	  }
     break;
 
@@ -764,6 +783,14 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			rtems_gdb_tgt_set_pc(current, i);
 		i   = task_resume( current, 's' == *(ptr-1) ? SIGTRAP : SIGCONT );
 
+		if ( -2 == i ) {
+			/* target doesn't know how to start single-stepping on
+			 * a suspended thread
+			 */
+			strcpy(remcomOutBuffer,"E0D");
+			break;
+		}
+
 		/* check if there's another message pending */
 		msg = getFirstMsg();
 
@@ -807,40 +834,8 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		   * no messages pending, we return the old signal status
 		   */
 
-		sprintf(remcomOutBuffer,"T%02xthread:08%x;",current->sig, current->tid);
+		sprintf(remcomOutBuffer,"T%02xthread:%08x;",current->sig, current->tid);
 	break;
-
-#if 0
-	  /* cAA..AA    Continue at address AA..AA(optional) */
-	  /* sAA..AA   Step one instruction from AA..AA(optional) */
-	case 's':
-	  stepping = 1;
-	case 'c':
-	  /* try to read optional parameter, pc unchanged if no parm */
-	  if (hexToInt (&ptr, &addr))
-	    registers[PC] = addr;
-
-	  newPC = registers[PC];
-
-	  /* clear the trace bit */
-	  registers[PS] &= 0x7fff;
-
-	  /* set the trace bit if we're stepping */
-	  if (stepping)
-	    registers[PS] |= 0x8000;
-
-	  if (rtems_remote_debug)
-	    printf ("new pc = 0x%x\n", newPC);
-
-	  _returnFromException (msg.frm);	/* this is a jump */
-
-#warning TODO /s/c/
-#endif
-	  break;
-
-	  /* kill the program */
-	case 'k':		/* do nothing */
-	  break;
 
 	case 'P':
 	  strcpy(remcomOutBuffer,"E16");
@@ -945,8 +940,33 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		}	
 	  break;
 
+	  case 'z':
 	  case 'Z':
-		strcpy(remcomOutBuffer,"OK");
+		{
+		int addr,len;
+		char *op = ptr++-1;
+		if (   ',' != *ptr++ || !hexToInt(&ptr,&addr)
+            || ',' != *ptr++ || !hexToInt(&ptr,&len) 
+			)
+		break;
+
+		switch ( op[1] ) {
+			case '0':
+			/* software breakpoint */
+			if ( 0 == setjmp(remcomEnv) ) {
+				/* try to write breakpoint */
+				rtems_gdb_tgt_insdel_breakpoint('Z'==op[0],addr,len);
+				strcpy(remcomOutBuffer,"OK");
+			} else {
+	      		strcpy (remcomOutBuffer, "E03");
+	      		debug_error ("%s\n","bus error");
+			}
+			break;
+			default:	
+				strcpy (remcomOutBuffer, "E16");
+			break;
+		}
+		}
 	  break;
 
 	}			/* switch */
@@ -1094,6 +1114,7 @@ int  sd;
 static int
 task_resume(RtemsDebugMsg msg, int sig)
 {
+rtems_status_code sc = -1;
 	if ( msg->tid ) {
 		/* if we attached to an already sleeping thread, don't resume
 		 * don't resume DEAD threads that were suspended due to memory
@@ -1102,8 +1123,20 @@ task_resume(RtemsDebugMsg msg, int sig)
 		if ( SIGINT == msg->sig || (msg->frm && SIGTRAP == msg->sig) ) {
 			msg->contSig = sig;
 			assert(msg->node.p == msg->node.n && msg->node.p == &msg->node);
-			rtems_task_resume(msg->tid);
-			return 0;
+			/* ask the target specific code to help if they want to single
+			 * step a frame-less task
+			 */
+			if ( msg->frm
+			    || SIGCONT == sig
+      /* HMMM - We can't just change the state in the TCB.
+	   *        What if we the thread is soundly asleep? We
+	   *        currently have no provision to undo the changes
+	   *        made by tgt_single_step()...
+				|| 0 == rtems_gdb_tgt_single_step(msg)
+	   */
+			   )
+				sc = rtems_task_resume(msg->tid);
+			return RTEMS_SUCCESSFUL == sc ? 0 : -2;
 		} else {
 			/* add to cemetery if not there already */
 			if ( &msg->node == msg->node.p )

@@ -12,6 +12,7 @@
 #include <libcpu/spr.h> 
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <signal.h>
 
 typedef struct FrameRec_ {
@@ -38,6 +39,26 @@ Thread_Control		*tcb = 0;
 	return tcb;
 }
 
+/* max number of simultaneously stopped threads */
+#define NUM_FRAMES	40
+
+#define FRAME_SZ (((EXCEPTION_FRAME_END+1200+15)&~15)>>2)
+
+/* EABI alignment req */
+
+typedef union GdbStackFrameU_ *GdbStackFrame;
+
+typedef union GdbStackFrameU_ {
+	struct {
+		unsigned long frame[FRAME_SZ];
+		unsigned long lrroom[4];
+	} stack;
+	GdbStackFrame next;
+} GdbStackFrameU __attribute__((aligned(16)));
+
+static GdbStackFrameU savedStack[NUM_FRAMES] = {{{{0}}}};
+static GdbStackFrame freeList = 0;
+
 #define GPR0_OFF  (0)
 #define FPR0_OFF  (32*4)
 #define PC___OFF  (32*4+32*8+4*0)
@@ -47,6 +68,45 @@ Thread_Control		*tcb = 0;
 #define CTR__OFF  (32*4+32*8+4*4)
 #define XER__OFF  (32*4+32*8+4*6)
 #define FPSCR_OFF (32*4+32*8+4*7)
+
+typedef struct BpntRec_ *Bpnt;
+
+typedef struct BpntRec_ {
+	volatile unsigned long *addr;
+	unsigned long opcode;
+} BpntRec;
+
+#define NUM_BPNTS 32
+
+static BpntRec bpnts[NUM_BPNTS] = {{0}};
+
+#define TRAP(no) (0x0ce00000 + ((no)&0xffff)) /* twi 7,0,no */
+#define TRAPNO(opcode) ((int)(((opcode) & 0xffff0000) == TRAP(0) ? (opcode)&0xffff : -1))
+
+static inline unsigned long
+do_patch(volatile unsigned long *addr, unsigned long val)
+{
+unsigned long rval;
+
+	rval = *addr;
+	/* longjmp should restore MSR */
+	/* disable interrupts AND MMU to work around write-protection */
+	asm volatile(
+		"	mfmsr 0         \n"
+		"   andc  7,0,%0    \n" 
+		"	mtmsr 7         \n" /* msr is exec. synchronizing; rval access complete */
+		"	isync           \n" /* context sync.; DR off after this                 */
+		"   stw   %2,0(%1)  \n"
+		"	dcbst 0,%1      \n" /* write out data cache line (addr)                 */
+		"	icbi  0,%1      \n" /* invalidate instr. cache line (addr)              */
+		"	mtmsr 0			\n" /* msr is exec. synchr.; mem access completed       */
+		"   sync            \n" /* probably not necessary                           */
+		"	isync           \n" /* context sync.; MMU on after this                 */
+		::"r"(MSR_EE|MSR_DR), "b"(addr), "r"(val)
+		:"r0","r7");
+	return rval;
+}
+
 
 int
 rtems_gdb_tgt_regoff(int regno, int *poff)
@@ -155,37 +215,34 @@ Thread_Control *tcb = 0;
 
 }
 
-BSP_Exception_frame dummyFrame = {0};
-
 static void (*origHandler)()=0;
 
-static int
-vec2sig(int exc_num)
-{
-	switch (exc_num) {
-		default: break;
-	}
-	return -1; /* unknown */
-}
+#define RELOC(ptr) ((void*)((diff)+(unsigned long)(ptr)))
 
 static void
 exception_handler(BSP_Exception_frame *f)
 {
+static struct {
+	int 			trapno;
+	unsigned long	msr;
+	int				sig;
+} stepOverState = { -1,0,0 };
 RtemsDebugMsgRec msg;
 
     if (   rtems_interrupt_is_in_progress()
 	    || !_Thread_Executing 
-		|| (RTEMS_SUCCESSFUL!=rtems_task_ident(RTEMS_SELF,RTEMS_LOCAL,&msg.tid)) ) {
+		|| (RTEMS_SUCCESSFUL!=rtems_task_ident(RTEMS_SELF,RTEMS_LOCAL, &msg.tid)) ) {
 		/* unable to deal with this situation */
 		origHandler(f);
 		return;
 	}
-printk("Task %x got exception %i, frame %x, GPR1 %x\n",
-	msg.tid,f->_EXC_number, f, f->GPR1);
+printk("Task %x got exception %i, frame %x, GPR1 %x, IP %x\n\n",
+	msg.tid,f->_EXC_number, f, f->GPR1, f->EXC_SRR0);
+printk("\n");
 
 	/* the debugger should be able to handle its own exceptions */
 	msg.frm = f;
-    msg.sig = -1;
+    msg.sig = SIGHUP;
 
 	switch ( f->_EXC_number ) {
 		case ASM_MACH_VECTOR     :
@@ -200,7 +257,8 @@ printk("Task %x got exception %i, frame %x, GPR1 %x\n",
 		break;
 
 		case ASM_PROG_VECTOR     :
-			msg.sig = SIGILL;
+			/* did we run into a soft breakpoint ? */
+			msg.sig = TRAPNO(*(volatile unsigned long*)f->EXC_SRR0) < 0 ? SIGILL : SIGTRAP;
 		break;
 
 		case ASM_FLOAT_VECTOR    :
@@ -216,6 +274,38 @@ printk("Task %x got exception %i, frame %x, GPR1 %x\n",
 		break;
 
 		case ASM_TRACE_VECTOR    :
+			if ( stepOverState.sig ) {
+				/* 'phase 2' of single stepping */
+				/* we just stepped over a soft breakpoint;
+			 	 * NO interrupts could happen (we disabled MSR_EE)
+			 	 * we completely owned the CPU until now (therefore,
+			 	 * a single static variable is OK to maintain our state
+			 	 */
+				if ( stepOverState.trapno >= 0 ) {
+					/* restore soft bpnt */
+					do_patch(bpnts[stepOverState.trapno].addr, TRAP(stepOverState.trapno));
+				}
+
+				/* restore MSR       */
+				f->EXC_SRR1          = stepOverState.msr;
+
+				/* restore continuation signal */
+				msg.contSig = stepOverState.sig;
+
+				/* important: mark stepping terminated */
+				stepOverState.sig    = 0;
+
+				if ( SIGCONT == msg.contSig ) {
+					/* we are DONE and let the thread resume */
+					return;
+				}
+			}
+			/* in any case, we should switch SE off now.
+			 * It is possible to end up here if they attach
+			 * to a thread without breakpoint (step after
+			 * task_switch_to())
+			 */
+			f->EXC_SRR1 &= ~MSR_SE;
 			msg.sig = SIGTRAP;
 		break;
 
@@ -224,28 +314,150 @@ printk("Task %x got exception %i, frame %x, GPR1 %x\n",
     if (f->EXC_SRR1 & MSR_FP) {
 		/* thread dispatching is _not_ disabled at this point; hence
 		 * we must make sure we have the FPU enabled...
+		 * original MSR will be restored anyways.
 		 */
 		_write_MSR( _read_MSR() | MSR_FP );
 		__asm__ __volatile__("isync");
 	}
 	if ( msg.tid == rtems_gdb_tid ) {
-		origHandler(f);
 		f->EXC_SRR0 = (unsigned long)rtems_debug_handle_exception;
 		f->GPR3     = msg.sig;
         return;
 	} else {
-		rtems_debug_notify_and_suspend(&msg);
+
+		if ( ! rtems_gdb_break_tid || rtems_gdb_break_tid == msg.tid ) {
+		
+			rtems_debug_notify_and_suspend(&msg);
+		} else {
+			/* this thread ignores the breakpoint */
+			msg.contSig = SIGCONT;
+		}
+
+		/* resuming; we might have to step over a breakpoint */
+		if ( (stepOverState.trapno = TRAPNO(*(volatile unsigned long *)f->EXC_SRR0)) >= 0 ) {
+			/* indeed; have to patch back and single step over it */
+			do_patch(bpnts[stepOverState.trapno].addr, bpnts[stepOverState.trapno].opcode);
+		}
+
+		if ( stepOverState.trapno >= 0 || SIGCONT != msg.contSig ) {
+			/* phase 1 of a single step */
+
+			/* save the state we need after the step since 'msg'
+			 * will have GONE (it's on the stack)
+			 */
+			stepOverState.msr = f->EXC_SRR1;
+			stepOverState.sig = msg.contSig;
+
+			/* DISABLE interrupts but enable TRACE exception      */
+			/* this is IMPORTANT as it asserts that we own the CPU
+			 * until this exception handler is called again.
+			 * Logically, execution 'resumes' in the
+			 * ASM_TRACE_VECTOR branch above
+			 */
+			f->EXC_SRR1 &= ~MSR_EE;
+			f->EXC_SRR1 |= MSR_SE;
+		} else {
+			stepOverState.sig = 0;
+		}
 		return;
 	}
 
 	origHandler(f);
 }
 
+static void 
+flip_stack(Frame top, long diff)
+{
+Frame fix;
+Frame sp;
+
+	asm volatile ("mr %0,1":"=r"(sp));
+
+	/* fixup the frame pointers */
+	for (fix = sp; fix < top; ) {
+		fix->up = RELOC(fix->up);
+		fix = fix->up;
+	}
+	memcpy(RELOC(sp), sp, (unsigned)top - (unsigned)sp);
+	/* switch to new stack */
+	asm volatile("mr 1,%0"::"r"(RELOC(sp)):"memory");
+}
+
+static void
+switch_stack(BSP_Exception_frame *f)
+{
+GdbStackFrame volatile stk;
+unsigned long diff;
+
+	/* Here comes creepy stuff:
+	 * GDB expects us to leave the stack as 
+	 * the interrupted function left it.
+	 * However, the whole exception handler has
+	 * been using the thread stack which conflicts
+	 * with this GDB requirement. Hence, we
+	 * save everything into a separate area and
+	 * switch the stack pointer.
+	 */
+
+	/* allocate a frame */
+	if ( !(stk=freeList) )
+		rtems_fatal_error_occurred(RTEMS_NO_MEMORY);
+
+	freeList  = freeList->next;
+	stk->next = 0;
+
+	/* fixup the exception frame pointer */
+	/* copy frame; hopefully nobody upstream in the call stack
+	 * uses other pointers into the frame...
+	 */
+
+	diff      =  (unsigned long)(stk->stack.frame+FRAME_SZ);
+	diff     -=  (unsigned long)f->GPR1;
+
+{ unsigned sp;
+	asm volatile("mr %0,1":"=r"(sp));
+printk("OLD BOS %x -> %x\n",sp,*(unsigned long*)sp);
+printk("OLD TOS %x -> %x\n",f->GPR1, *(unsigned long*)f->GPR1);
+printk("OLD STK %x\n",stk);
+
+	flip_stack((Frame)f->GPR1, diff);
+
+	memset((void*)sp,0,(unsigned)f->GPR1 - sp);
+
+printk("NEW TOS %x -> %x\n",stk->stack.lrroom, stk->stack.lrroom[0]);
+printk("NEW BOS %x -> %x\n",RELOC(sp),*(unsigned long*)RELOC(sp));
+printk("NEW STK %x\n",stk);
+}
+
+	exception_handler(RELOC(f));
+
+	/* switch back */
+	flip_stack((Frame)stk->stack.lrroom,-diff);
+
+printk("BACK resuming at PC %x SP %x\n",f->EXC_SRR0, f->GPR1);
+
+	/* free up the frame -- this context runs until the
+	 * frame is popped without interruption, hence adding
+	 * it to the free list should be safe.
+	 */
+
+	stk->next = freeList;
+	freeList  = stk;
+}
+
+#define exception_handler switch_stack
+
 int
 rtems_debug_install_ehandler(int action)
 {
 int rval = 0;
 rtems_unsigned32 flags;
+
+	if ( action ) {
+		/* initialize stack frame list */
+		for ( freeList = savedStack + (NUM_FRAMES-1); freeList > savedStack; freeList-- )
+			(freeList-1)->next = freeList;
+	}
 
 	rtems_interrupt_disable(flags);
 	if ( action ) {
@@ -284,4 +496,85 @@ Thread_Control *tcb;
 		tcb->Registers.pc = pc;
 		_Thread_Enable_dispatch();
 	}
+}
+
+int
+rtems_gdb_tgt_insdel_breakpoint(int doins, int addr, int len)
+{
+Bpnt            found, slot;
+volatile unsigned long   opcode, subst;
+
+
+	for ( found = bpnts + (NUM_BPNTS - 1), slot = 0;
+		  found >= bpnts;
+		  found-- ) {
+		if ( !found->opcode )
+			slot = found;
+		else if ( found->addr == (volatile unsigned long *)addr )
+			break;
+	}
+	if ( found < bpnts )
+		found = 0;
+
+	/* here we have
+	 *  found  -> matching entry, slot undefined
+	 *  !found -> slot is either a free entry or 0 if none available
+	 */
+		
+	/* we should insert and it's already there OR
+	 * we should delete and it's already gone
+	 */
+	if ( (found && doins) || (!found && !doins) )
+		return 0;
+
+	if ( doins && !slot )
+		return -1;
+
+	subst = doins ? TRAP(slot-bpnts) : found->opcode;	
+
+/* BEGIN LONJMP POSSIBLE */
+	/* patch */
+	/* longjmp should restore interrupt mask */
+	opcode = do_patch((volatile unsigned long*)addr, subst);
+/* END LONGJMP POSSIBLE */
+
+	/* we are  safe now */
+
+	if ( doins ) {
+		slot->addr   = (volatile unsigned long *)addr;
+		slot->opcode = opcode;
+	} else {
+		found->addr   = 0;
+		found->opcode = 0;
+	}
+	return 0;
+}
+
+void
+rtems_gdb_tgt_remove_all_bpnts()
+{
+Bpnt f;
+int  i;
+	for (i=0,f=bpnts; i<NUM_BPNTS; i++,f++) {
+		if (f->opcode) {
+			do_patch((volatile unsigned long*)f->addr, f->opcode);
+			f->opcode = 0;
+		}
+	}
+}
+
+int
+rtems_gdb_tgt_single_step(RtemsDebugMsg msg)
+{
+Thread_Control *tcb;
+
+	if (msg->frm) return 0;
+
+	if ( (tcb = get_tcb(msg->tid)) ) {
+		/* just set SE in the TCB :-) */
+		tcb->Registers.msr |= MSR_SE;
+		_Thread_Enable_dispatch();
+		return 0;
+	}
+	return -1;
 }
