@@ -2,10 +2,11 @@
 
 /* architecture dependent implementation needs to define:
  *
- * SP_GET(sp)  read current stack pointer into 'sp'
- * SP_PUT(val) load stack pointer register with 'val' 
+ * SP_GET(sp)  read current stack pointer into 'sp' (for debugging)
  * BP_GET(bp)  read  frame base pointer into 'bp'
- * BP_PUT(val) write frame base pointer with 'val'
+ * FLIP_REGS(diff) switch 'sp', 'bp' and whatever else is
+ *             needed by 'diff'. Make sure stack is not used
+ *             during the flip!
  * STACK_ALIGNMENT alignment requirement for stack
  * FRAME_SZ    how much space to set aside (in 32-bit WORDS)
  * PC(f)       value of instruction pointer in exception frame f
@@ -17,9 +18,10 @@
 
 /*
  *
- * Here's what 'switch_stack' does:
+ * Here's what 'switched_stack_suspend' does:
  * 
- * PIOR TO entering GDB (via the 'notify_and_suspend()' routine):
+ * PIOR TO entering GDB (via the context switch introduced by
+ * 'rtems_task_suspend()'):
  *
  *  1) everything that was dumped on the stack as a result of the
  *     exception is copied to a private memory area (exception frame
@@ -35,7 +37,7 @@
  *  CAVEAT: exception handler and routines called from it MUST NOT
  *          USE addresses to variables on the stack with the exception
  *          of the RtemsDebugMsg pointer passed to the 'notify' routine.
- *          This pointer is relocated by switch_stack().
+ *          This pointer is relocated by switched_stack_suspend().
  *
  * AFTER leaving GDB:
  *  1) private stack is copied back to the task stack area UNDERNEATH
@@ -147,45 +149,43 @@ typedef union GdbStackFrameU_ {
 __attribute__((aligned(STACK_ALIGNMENT)));
 
 static GdbStackFrameU savedStack[NUM_FRAMES] = {{{{0}}}};
-static GdbStackFrame freeList = 0;
+static GdbStackFrame  freeStck = 0;
 
+static void 
+flip_stack(Frame top, long diff) __attribute__((noinline));
 
 static void 
 flip_stack(Frame top, long diff)
 {
-Frame fix;
-Frame sp,bp;
+Frame         fix, tmp;
+unsigned long bot;
 
-	SP_GET(sp);
-	BP_GET(bp);
-
-printk("OLD BOS %x -> %x\n",sp,  *(unsigned long*)sp);
-printk("OLD TOS %x -> %x\n",top, *(unsigned long*)top);
+	BP_GET(bot);
 
 	/* fixup the frame pointers */
-	for ( fix=bp; fix < top; ) {
-		fix->up = RELOC(fix->up);
-		fix = fix->up;
+	for ( fix=(Frame)bot; fix < top; ) {
+		tmp = fix->up;
+		fix->up = RELOC(tmp);
+		fix = tmp;
 	}
-	memcpy(RELOC(sp), sp, (unsigned)top - (unsigned)sp);
+	bot -= 100; /* what this routine needs */
+	memcpy(RELOC(bot), (void*)bot, (unsigned)top - bot);
 
 	/* switch to new stack */
-	SP_PUT(RELOC(sp));
-	BP_PUT(RELOC(bp));
-	
+	FLIP_REGS(diff);
 
-/* DEBUG: purge the old region; make sure it works */
-memset((void*)sp,0,(unsigned)top - (unsigned)sp);
+if ( DEBUG_STACK & rtems_remote_debug ) {
+	/* DEBUG: purge the old region; make sure it works */
+	memset((void*)bot,0,(unsigned)top - bot);
+}
 
-printk("NEW BOS %x -> %x\n",RELOC(sp),*(unsigned long*)RELOC(sp));
-printk("NEW TOS %x -> %x\n",RELOC(top),*(unsigned long*)RELOC(top));
 }
 
 static void
-switch_stack(RtemsDebugMsg m)
+switched_stack_suspend(RtemsDebugMsg volatile m)
 {
 GdbStackFrame volatile stk;
-unsigned long diff;
+unsigned long volatile diff;
 
 	/* Here comes creepy stuff:
 	 * GDB expects us to leave the stack as 
@@ -198,10 +198,10 @@ unsigned long diff;
 	 */
 
 	/* allocate a frame */
-	if ( !(stk=freeList) )
+	if ( !(stk=freeStck) )
 		rtems_fatal_error_occurred(RTEMS_NO_MEMORY);
 
-	freeList  = freeList->next;
+	freeStck  = freeStck->next;
 	stk->next = 0;
 
 	/* fixup the exception frame pointer */
@@ -212,16 +212,31 @@ unsigned long diff;
 	diff      =  (unsigned long)(stk->stack.frame+FRAME_SZ);
 	diff     -=  (unsigned long)SP(m->frm);
 
-printk("OLD STK %x\n",stk);
+if ( DEBUG_STACK & rtems_remote_debug ) {
+	unsigned sp,bp;
+	printk("OLD STK %x,  m %x, m->frm %x\n",stk,m,m?(unsigned)m->frm:0xdeadbeef);
+	SP_GET(sp); BP_GET(bp);
+	printk("OLD BP  %x, SP %x, diff %x\n",bp,sp,diff);
+}
 
 	flip_stack((Frame)SP(m->frm), diff);
 
-printk("NEW STK %x\n",stk);
+if ( DEBUG_STACK & rtems_remote_debug ) {
+	unsigned sp,bp;
+	printk("NEW STK %x\n",stk);
+	printk("PRE-RELOC: m %x, m->frm %x\n",m,m?(unsigned)m->frm:0xdeadbeef);
+	SP_GET(sp); BP_GET(bp);
+	printk("NEW BP  %x, SP %x diff %x\n",bp,sp,diff);
+}
 
 	m = RELOC(m);
 	m->frm = RELOC(m->frm);
 
-	rtems_debug_notify_and_suspend(m);
+if ( DEBUG_STACK & rtems_remote_debug ) {
+	printk("POST-RELOC: m %x, m->frm %x\n",m,m?(unsigned)m->frm:0xdeadbeef);
+}
+
+	post_and_suspend(m);
 
 	/* calculate diff again - stack pointer might have magically changed!!
 	 * because gdb can push stuff on the stack (which is the main
@@ -233,21 +248,25 @@ printk("NEW STK %x\n",stk);
 	/* switch back */
 	flip_stack((Frame)stk->stack.lrroom,diff);
 
-m = RELOC(m); m->frm = RELOC(m->frm);
-printk("BACK resuming at PC %x SP %x\n",PC(m->frm), SP(m->frm));
+	m = RELOC(m); m->frm = RELOC(m->frm);
+
+if ( DEBUG_STACK & rtems_remote_debug ) {
+	printk("BACK resuming at (m %x, frm %x) PC %x SP %x\n",
+		m, m->frm, PC(m->frm), SP(m->frm));
+}
 
 	/* free up the frame -- this context runs until the
 	 * frame is popped without interruption, hence adding
 	 * it to the free list should be safe.
 	 */
 
-	stk->next = freeList;
-	freeList  = stk;
+	stk->next = freeStck;
+	freeStck  = stk;
 }
 
 static void
 init_stack()
 {
-	for ( freeList = savedStack + (NUM_FRAMES-1); freeList > savedStack; freeList-- )
-		(freeList-1)->next = freeList;
+	for ( freeStck = savedStack + (NUM_FRAMES-1); freeStck > savedStack; freeStck-- )
+		(freeStck-1)->next = freeStck;
 }

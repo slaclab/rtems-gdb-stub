@@ -24,28 +24,6 @@
 /* breakpoint instruction */
 #define INT3 0xcc
 
-/* GDB-6.2.1 / i386 has no frame_align method and doesn't honour
- * the red-zone :-(
- * Therefore, we must resort to a separate stack.
- * See 'switch_stack.c' for an explanation how it works...
- */
-
-/* Define architecture specific stuff for i386 */
-
-typedef struct FrameRec_ {
-	struct FrameRec_ *up;
-} FrameRec, *Frame;
-
-#define STACK_ALIGNMENT 16 /* ?? */
-#define FRAME_SZ        ((128+16*4+500)>>2)
-#define SP_GET(sp)	do { asm volatile("movl %%esp, %0":"=r"(sp)); } while(0)
-#define SP_PUT(val)	do { asm volatile("movl %0, %%esp"::"r"(val)); } while(0)
-#define BP_GET(bp)	do { asm volatile("movl %%ebp, %0":"=r"(bp)); } while(0)
-#define BP_PUT(val)	do { asm volatile("movl %0, %%ebp"::"r"(val)); } while(0)
-#define SP(f)       ((unsigned long)(f)->esp0 + 5*4)
-#define PC(f)       ((unsigned long)(f)->eip)
-#include "switch_stack.c"
-
 /* Breakpoint implementation; a simple linked list
  * (as I said, i386 support is not very sophisticated)
  */
@@ -156,7 +134,7 @@ unsigned long	val;
 	if ( (tcb = get_tcb(msg->tid)) ) {
 		Context_Control_fp *fpc = tcb->fp_context;
 		if ( fpc ) {
-			/* TODO: copy FP regs */
+#warning TODO copy FP regs
 		}
 		if (!f) {
 			memcpy(buf + EBX_OFF, &tcb->Registers.ebx, 4);
@@ -178,7 +156,7 @@ rtems_gdb_tgt_r2f(RtemsDebugMsg msg, unsigned char *buf)
 {
 Thread_Control *tcb;
 RtemsDebugFrame f = msg->frm;
-int            deadbeef = 0xdeadbeef, i;
+int            deadbeef = 0xdeadbeef;
 unsigned long	val;
 
 	if ( f ) {
@@ -217,7 +195,7 @@ unsigned long	val;
 	if ( (tcb = get_tcb(msg->tid)) ) {
 		Context_Control_fp *fpc = tcb->fp_context;
 		if ( fpc ) {
-			/* TODO: copy FP regs */
+#warning TODO copy FP regs
 		}
 		if (!f) {
 			YPCMEM(buf + EBX_OFF, &tcb->Registers.ebx, 4);
@@ -247,9 +225,12 @@ RtemsDebugMsgRec msg;
 		origHandler(f);
 		return;
 	}
-printk("Task %x got exception %i, frame %x, sp %x, IP %x\n\n",
-	msg.tid,f->idtIndex, f, f->esp0, f->eip);
-printk("\n");
+
+if ( rtems_remote_debug & DEBUG_SCHED ) {
+	printk("Task %x got exception %i, frame %x, sp %x, IP %x\n\n",
+		msg.tid,f->idtIndex, f, f->esp0, f->eip);
+	printk("\n");
+}
 
 	/* the debugger should be able to handle its own exceptions */
 	msg.frm = f;
@@ -302,28 +283,23 @@ printk("\n");
 		default: break;
 	}
 
-	if ( msg.tid == rtems_gdb_tid ) {
-		f->eip = (unsigned long)rtems_debug_handle_exception;
-		f->eax = msg.sig;
-        return;
-	} else {
-
-			switch_stack(&msg);
-printk("Resumed from exception; contSig %i, sig %i, ESP 0x%08x PC 0x%08x EBP 0x%08x\n",
-			msg.contSig, msg.sig, msg.frm->esp0, msg.frm->eip, msg.frm->ebp);
-
-			if ( SIGCONT != msg.contSig ) {
-				msg.frm->eflags |= EFLAGS_TRAP;
-			}
-
+	if ( rtems_gdb_notify_and_suspend(&msg) ) {
+		origHandler(f);
 		return;
 	}
 
-	origHandler(f);
+if ( rtems_remote_debug & DEBUG_SCHED ) {
+	printk("Resumed from exception; contSig %i, sig %i, ESP 0x%08x PC 0x%08x EBP 0x%08x\n",
+		msg.contSig, msg.sig, msg.frm->esp0, msg.frm->eip, msg.frm->ebp);
+}
+
+	if ( SIGCONT != msg.contSig ) {
+		msg.frm->eflags |= EFLAGS_TRAP;
+	}
 }
 
 int
-rtems_debug_install_ehandler(int action)
+rtems_gdb_tgt_install_ehandler(int action)
 {
 int rval = 0, i;
 rtems_unsigned32 flags;
@@ -335,9 +311,6 @@ rtems_unsigned32 flags;
 
 	rtems_interrupt_disable(flags);
 	if ( action ) {
-
-		init_stack();
-
 		/* install */
 		if ( _currentExcHandler == exception_handler ) {
 			rval = -1;

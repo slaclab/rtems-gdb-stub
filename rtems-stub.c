@@ -64,6 +64,13 @@ pendSomethingHappening(RtemsDebugMsg *, int, char*);
 static int
 resume_stopped_task(rtems_id tid, int sig);
 
+static void
+post_and_suspend(RtemsDebugMsg msg);
+
+#ifndef USE_GDB_REDZONE
+#include "switch_stack.c"
+#endif
+
 #define BUFMAX      400		/* size of communication buffer; depends on NUMREGBYTES  */
 #define EXTRABUFSZ	200     /* size of buffer for thread extra and other string info */
 
@@ -99,7 +106,10 @@ int semacount = 0;
 
 static inline void SEMA_INC()
 {
+unsigned long flags;
+	rtems_interrupt_disable(flags);
 	semacount++;
+	rtems_interrupt_enable(flags);
 }
 
 static inline void SEMA_DEC()
@@ -110,11 +120,9 @@ unsigned long flags;
 	rtems_interrupt_enable(flags);
 }
 
-#define DEBUG_SCHED (1<<0)
-#define DEBUG_SLIST (1<<1)
-#define DEBUG_COMM  (1<<2)
+static void (* volatile rtems_gdb_handle_exception)(int) = 0;
 
-int     rtems_remote_debug = DEBUG_SCHED | DEBUG_SLIST;
+volatile int rtems_remote_debug = DEBUG_SCHED | DEBUG_SLIST | DEBUG_STACK;
 /*  debug >  0 prints ill-formed commands in valid packets & checksum errors */ 
 
 static const char hexchars[]="0123456789abcdef";
@@ -554,6 +562,16 @@ int               pri   = 0, i = 0;
 				}
 			} else {
 				_Objects_Copy_name_raw( &thr->Object.name, extrabuf + 1, oi->name_length );
+#if   CPU_BIG_ENDIAN    == TRUE
+#elif CPU_LITTLE_ENDIAN == TRUE
+				{ char *b, *e, c;
+					for (b=extrabuf+1, e=b+oi->name_length-1; b<e; b++, e--) {
+						c = *b; *b = *e; *e = c;
+					}
+				}
+#else
+#error unknown CPU endianness
+#endif
 			}
 			state = thr->current_state;
 			pri   = thr->real_priority;
@@ -623,6 +641,14 @@ int               pri   = 0, i = 0;
 	}
 	return i;
 }
+
+
+static void dolj(int signo)
+{
+	longjmp(remcomEnv,1);
+}
+
+
 /*
  * This function does all command processing for interfacing to gdb.
  */
@@ -685,7 +711,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		perror("GDB daemon: listen");
 		goto cleanup;
 	}
-	if (rtems_debug_install_ehandler(1))
+	if (rtems_gdb_tgt_install_ehandler(1))
 		goto cleanup;
 	ehandler_installed=1;
 	if ( !(dummy_tid = thread_helper("GDBh", 200, 20000+RTEMS_MINIMUM_STACK_SIZE, dummy_thread, 0)) )
@@ -841,12 +867,14 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			break;
 		}
 		if (setjmp (remcomEnv) == 0) {
+			rtems_gdb_handle_exception = dolj;
 			/* Try to read */
 			mem2hex ((char *) addr, remcomOutBuffer, len);
 		} else {
 			strcpy (remcomOutBuffer, "E03");
 			debug_error ("%s\n","bus error");
 	    }
+		rtems_gdb_handle_exception = 0;
 	break;
 
 	  /* M<addr>,<len>:<xx>  -- write <len> bytes (<xx>) to address <addr>, return OK */
@@ -859,6 +887,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			break;
 		}
 		if (setjmp (remcomEnv) == 0) {
+			rtems_gdb_handle_exception = dolj;
 			/* Try to write */
 			hex2mem (ptr, (char *) addr, len);
 			strcpy (remcomOutBuffer, "OK");
@@ -866,6 +895,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	      strcpy (remcomOutBuffer, "E03");
 	      debug_error ("%s\n","bus error");
 	    }
+		rtems_gdb_handle_exception = 0;
 
 	  break;
 
@@ -943,12 +973,14 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			strcpy(remcomOutBuffer,"E0D");
 		} else {
 			if ( 0 == setjmp(remcomEnv) ) {
+				rtems_gdb_handle_exception = dolj;
 				/* try to compute crc */
 				sprintf(remcomOutBuffer,"C%x",(unsigned)crc32((char*)addr, len, -1));
 			} else {
 	      		strcpy (remcomOutBuffer, "E03");
 	      		debug_error ("%s\n","bus error");
 			}
+			rtems_gdb_handle_exception = 0;
 		}
 	  } else if ( !strcmp(ptr+1,"ThreadInfo") ) {
 		if ( 'f' == *ptr ) {
@@ -1054,6 +1086,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			break; /* protocol error */
 		}
 		if ( 0 == setjmp(remcomEnv) ) {
+			rtems_gdb_handle_exception = dolj;
 			for ( i=0; i<len; i++ ) {
 				if ( 0x7d == *ptr )
 					*++ptr ^= 0x20;
@@ -1064,6 +1097,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	      	strcpy (remcomOutBuffer, "E03");
 	      	debug_error ("%s\n","bus error");
 		}
+		rtems_gdb_handle_exception = 0;
 	  break;
 
 		/* z<type>,<addr>,<len>   -- remove/insert <type> breakpoint at <addr> */
@@ -1080,6 +1114,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			case '0':
 			/* software breakpoint */
 			if ( 0 == setjmp(remcomEnv) ) {
+				rtems_gdb_handle_exception = dolj;
 				/* try to write breakpoint */
 				if ( rtems_gdb_tgt_insdel_breakpoint('Z'==op[0],addr,len) ) {
 					strcpy(remcomOutBuffer,"E16");
@@ -1090,6 +1125,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	      		strcpy (remcomOutBuffer, "E03");
 	      		debug_error ("%s\n","bus error");
 			}
+			rtems_gdb_handle_exception = 0;
 			break;
 			default:	
 				strcpy (remcomOutBuffer, "E16");
@@ -1118,7 +1154,7 @@ cleanup:
   if (dummy_tid)
   	rtems_task_delete(dummy_tid);
   if ( ehandler_installed ) {
-	rtems_debug_install_ehandler(0);
+	rtems_gdb_tgt_install_ehandler(0);
   }
   if ( rtems_gdb_strm ) {
 	fclose(rtems_gdb_strm);
@@ -1140,15 +1176,10 @@ cleanup:
    the debugger. */
 
 void
-rtems_debug_breakpoint ()
+rtems_gdb_breakpoint ()
 {
   if (initialized)
     BREAKPOINT ();
-}
-
-void rtems_debug_handle_exception(int signo)
-{
-	longjmp(remcomEnv,1);
 }
 
 static rtems_id
@@ -1212,14 +1243,20 @@ void blah()
 }
 
 int
-rtems_debug_start(int pri)
+rtems_gdb_start(int pri)
 {
+	if ( 0 == pri )
+		pri = 20;
 
-	rtems_gdb_tid = thread_helper("GDBd", 20, 20000+RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, 0);
-#if 1
-	blah_tid = thread_helper("blah", 200, RTEMS_MINIMUM_STACK_SIZE, blah, 0);
+	crc32_init(crc32_table);
+#ifndef USE_GDB_REDZONE
+	init_stack();
 #endif
 
+	rtems_gdb_tid = thread_helper("GDBd", pri, 20000+RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, 0);
+#if 0
+	blah_tid = thread_helper("blah", 200, RTEMS_MINIMUM_STACK_SIZE, blah, 0);
+#endif
 	return !rtems_gdb_tid;
 }
 
@@ -1245,12 +1282,11 @@ _cexpModuleInitialize(void *h)
     blahaddr.sin_family = AF_INET;
     blahaddr.sin_port   = htons(RTEMS_GDB_PORT);
 
-	crc32_init(crc32_table);
- 	rtems_debug_start(40);
+ 	rtems_gdb_start(40);
 }
 
-void
-rtems_debug_stop()
+int
+rtems_gdb_stop()
 {
 int  sd;
 
@@ -1265,6 +1301,7 @@ int  sd;
 	rtems_gdb_sd = -1;
 	if ( sd >= 0 )
 		close(sd);
+	return 0;
 }
 
 /* restart the thread provided that it exists and
@@ -1399,7 +1436,6 @@ task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 
 				
 			default:
-				cur->tid = 0;
 				rtems_error(sc, "suspending target thread 0x%08x failed", new_tid);
 				/* thread might have gone away; attach to helper */
 				cur = theDummy; theDummy = 0;
@@ -1424,63 +1460,87 @@ task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 return cur;
 }
 
-/* this is called from exception handler (ISR) context !! */
-void rtems_debug_notify_and_suspend(RtemsDebugMsg msg)
+/* must call this from inside 'switch_stack' with
+ * properly relocated pointers...
+ */
+static void post_and_suspend(RtemsDebugMsg msg)
 {
 	cdll_init_el(&msg->node);
-
-#ifndef ONETHREAD_TEST
-printk("NOTIFY with sig %i\n",msg->sig);
-	if ( SIGCHLD == msg->sig ) {
-		if ( rtems_gdb_break_tid && rtems_gdb_break_tid != msg->tid ) {
-		/* breakpoint hit; only stop if thread matches */
-			msg->contSig = SIGCONT;
-			return;
-		} else {
-			msg->sig = SIGTRAP;
-		}
-	}
-	/* hook into the list */
 	cdll_splerge_tail(&anchor, &msg->node);
-
-	/* notify the daemon that a stopped thread is available */
-	rtems_semaphore_release(gdb_pending_id);
-	SEMA_INC();
-#else
-	switch ( msg->sig ) {
-		case SIGCHLD:
-			/* breakpoint hit; only stop if thread matches */
-			if ( !rtems_gdb_break_tid )
-				rtems_gdb_break_tid = msg->tid;
-			else if ( rtems_gdb_break_tid != msg->tid ) {
-				msg->contSig = SIGCONT;
-				return;
-			}
-			msg->sig = SIGTRAP;
-			
-			/* fall thru */
-		case SIGTRAP: /* single step tracing */
-			/* hook into the list */
-			cdll_splerge_tail(&anchor, &msg->node);
-
-			/* notify the daemon that a stopped thread is available */
-			rtems_semaphore_release(gdb_pending_id);
-			SEMA_INC();
-
-			break;
-
-		default:
-			/* save dead thread in the cemetery */
-			cdll_splerge_tail(&cemetery, &msg->node);
-		break;
+	if ( rtems_remote_debug & DEBUG_STACK ) {
+		printk("Posted 0x%08x\n", msg);
 	}
-#endif
+
+	/* notify the daemon that a stopped thread is available
+	 * (this action may already switch context!)
+	 */
+	SEMA_INC();
+	rtems_semaphore_release(gdb_pending_id);
 
 	/* hackish but it should work:
 	 * rtems_task_suspend should work for other APIs also...
 	 * probably should check for 'local' node.
 	 */
-	rtems_task_suspend( msg->tid );
+	while (1) {
+		rtems_task_suspend( msg->tid );
+	
+		if ( msg->node.n != &msg->node || msg->node.p != &msg->node ) {
+			printk("GDB daemon (from exception handler) FATAL ERROR: message still on a list???\n");
+		} else {
+			return;
+		}
+	}
+}
+
+/* this is called from exception handler (ISR) context !! */
+int rtems_gdb_notify_and_suspend(RtemsDebugMsg msg)
+{
+	if ( !initialized ) 
+		return -1;
+
+	if ( msg->tid == rtems_gdb_tid ) {
+		if (rtems_gdb_handle_exception) {
+			rtems_gdb_tgt_set_pc(msg, (unsigned long)rtems_gdb_handle_exception);
+			return 0;
+		}
+		return -1;
+	}
+
+	if ( rtems_remote_debug & DEBUG_STACK )
+		printk("NOTIFY with sig %i\n",msg->sig);
+
+	/* arch dep. code sends us SIGCHLD for a breakpoint
+	 * and SIGTRAP for single-step. We need to distinguish
+	 * because we DONT want to check the thread ID if we
+	 * are in single-step mode.
+	 */
+
+	if ( SIGCHLD == msg->sig ) {
+		/* breakpoint hit */
+
+		if ( rtems_gdb_break_tid && rtems_gdb_break_tid != msg->tid ) {
+			/* only stop if thread matches */
+			msg->contSig = SIGCONT;
+			return 0;
+		} else {
+			msg->sig = SIGTRAP;
+		}
+	}
+
+
+	/* Only switch stack for 'live' threads. If the user
+	 * issues 'call xxx()' from the GDB command line on
+	 * a dead thread she is in trouble anyways!
+	 */
+
+#ifndef USE_GDB_REDZONE
+	if ( SIGTRAP == msg->sig )
+		switched_stack_suspend(msg);
+	else
+#endif
+		post_and_suspend(msg);
+
+	return 0;
 }
 
 static RtemsDebugMsg getFirstMsg(int block)

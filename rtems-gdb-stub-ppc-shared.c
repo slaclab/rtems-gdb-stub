@@ -16,12 +16,6 @@
 #include <signal.h>
 #include <assert.h>
 
-#define USE_GDB_REDZONE
-
-typedef struct FrameRec_ {
-	struct FrameRec_ *up;
-	unsigned 		  lr;
-} FrameRec, *Frame;
 
 #define get_tcb(tid) rtems_gdb_get_tcb_dispatch_off(tid)
 
@@ -49,20 +43,6 @@ static BpntRec bpnts[NUM_BPNTS] = {{0}};
 
 #define TRAP(no) (0x0ce00000 + ((no)&0xffff)) /* twi 7,0,no */
 #define TRAPNO(opcode) ((int)(((opcode) & 0xffff0000) == TRAP(0) ? (opcode)&0xffff : -1))
-
-#ifndef USE_GDB_REDZONE
-/* SP and BP are the same thing on PPC */
-#define SP_PUT(val) do { asm volatile("mr 1,%0"::"r"(val):"memory"); } while (0)
-#define SP_GET(sp)  do { asm volatile ("mr %0,1":"=r"(sp)); } while(0)
-#define BP_PUT(val) do { asm volatile("mr 1,%0"::"r"(val):"memory"); } while (0)
-#define BP_GET(bp)  do { asm volatile ("mr %0,1":"=r"(bp)); } while(0)
-#define FRAME_SZ   (((EXCEPTION_FRAME_END+1200+15)&~15)>>2)
-/* EABI alignment req */
-#define STACK_ALIGNMENT 16
-#define SP(f)		((unsigned long)(f)->GPR1)
-#define PC(f)		((unsigned long)(f)->EXC_SRR0)
-#include "switch_stack.c"
-#endif
 
 static inline unsigned long
 do_patch(volatile unsigned long *addr, unsigned long val)
@@ -215,9 +195,12 @@ RtemsDebugMsgRec msg;
 		origHandler(f);
 		return;
 	}
+
+if ( rtems_remote_debug & DEBUG_SCHED ) {
 printk("Task %x got exception %i, frame %x, GPR1 %x, IP %x\n\n",
 	msg.tid,f->_EXC_number, f, f->GPR1, f->EXC_SRR0);
 printk("\n");
+}
 
 	/* the debugger should be able to handle its own exceptions */
 	msg.frm = f;
@@ -298,65 +281,51 @@ printk("\n");
 		_write_MSR( _read_MSR() | MSR_FP );
 		__asm__ __volatile__("isync");
 	}
-	if ( msg.tid == rtems_gdb_tid ) {
-		f->EXC_SRR0 = (unsigned long)rtems_debug_handle_exception;
-		f->GPR3     = msg.sig;
-        return;
-	} else {
 
-#ifdef USE_GDB_REDZONE
-		rtems_debug_notify_and_suspend(&msg);
-#else
-		switch_stack(&msg);
-#endif
-printk("Resumed from exception; contSig %i, sig %i, GPR1 0x%08x PC 0x%08x LR 0x%08x\n",
-			msg.contSig, msg.sig, msg.frm->GPR1, msg.frm->EXC_SRR0, msg.frm->EXC_LR);
-
-		/* resuming; we might have to step over a breakpoint */
-		if ( (stepOverState.trapno = TRAPNO(*(volatile unsigned long *)f->EXC_SRR0)) >= 0 ) {
-			/* indeed; have to patch back and single step over it */
-			do_patch(bpnts[stepOverState.trapno].addr, bpnts[stepOverState.trapno].opcode);
-		}
-
-		if ( stepOverState.trapno >= 0 || SIGCONT != msg.contSig ) {
-			/* phase 1 of a single step */
-
-			/* save the state we need after the step since 'msg'
-			 * will have GONE (it's on the stack)
-			 */
-			stepOverState.msr = f->EXC_SRR1;
-			stepOverState.sig = msg.contSig;
-
-			/* DISABLE interrupts but enable TRACE exception      */
-			/* this is IMPORTANT as it asserts that we own the CPU
-			 * until this exception handler is called again.
-			 * Logically, execution 'resumes' in the
-			 * ASM_TRACE_VECTOR branch above
-			 */
-			f->EXC_SRR1 &= ~MSR_EE;
-			f->EXC_SRR1 |= MSR_SE;
-		} else {
-			stepOverState.sig = 0;
-		}
+	if ( rtems_gdb_notify_and_suspend(&msg) ) {
+		origHandler(f);
 		return;
 	}
 
-	origHandler(f);
+if ( rtems_remote_debug & DEBUG_SCHED ) {
+printk("Resumed from exception; contSig %i, sig %i, GPR1 0x%08x PC 0x%08x LR 0x%08x\n",
+		msg.contSig, msg.sig, msg.frm->GPR1, msg.frm->EXC_SRR0, msg.frm->EXC_LR);
+}
+
+		/* resuming; we might have to step over a breakpoint */
+	if ( (stepOverState.trapno = TRAPNO(*(volatile unsigned long *)f->EXC_SRR0)) >= 0 ) {
+			/* indeed; have to patch back and single step over it */
+		do_patch(bpnts[stepOverState.trapno].addr, bpnts[stepOverState.trapno].opcode);
+	}
+
+	if ( stepOverState.trapno >= 0 || SIGCONT != msg.contSig ) {
+		/* phase 1 of a single step */
+
+		/* save the state we need after the step since 'msg'
+		 * will have GONE (it's on the stack)
+		 */
+		stepOverState.msr = f->EXC_SRR1;
+		stepOverState.sig = msg.contSig;
+
+		/* DISABLE interrupts but enable TRACE exception      */
+		/* this is IMPORTANT as it asserts that we own the CPU
+		 * until this exception handler is called again.
+		 * Logically, execution 'resumes' in the
+		 * ASM_TRACE_VECTOR branch above
+		 */
+		f->EXC_SRR1 &= ~MSR_EE;
+		f->EXC_SRR1 |= MSR_SE;
+	} else {
+		stepOverState.sig = 0;
+	}
 }
 
 
 int
-rtems_debug_install_ehandler(int action)
+rtems_gdb_tgt_install_ehandler(int action)
 {
 int rval = 0;
 rtems_unsigned32 flags;
-
-	if ( action ) {
-#ifndef USE_GDB_REDZONE
-		/* initialize stack frame list */
-		init_stack();
-#endif
-	}
 
 	rtems_interrupt_disable(flags);
 	if ( action ) {

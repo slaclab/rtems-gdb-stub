@@ -7,9 +7,13 @@
 extern volatile rtems_id rtems_gdb_tid;
 extern volatile rtems_id rtems_gdb_break_tid;
 
+/* TARGET ARCHITECTURE SPECIFIC ROUTINES; TO BE SUPPLIED BY
+ * rtems-gdb-stub-xxxcpuxxx.c
+ */
+
 /* install / uninstall exception handler */
 int
-rtems_debug_install_ehandler(int action);
+rtems_gdb_tgt_install_ehandler(int action);
 
 typedef struct RtemsDebugMsgRec_ {
 	CdllNodeRec				node;
@@ -65,10 +69,7 @@ rtems_gdb_tgt_remove_all_bpnts(void);
 int
 rtems_gdb_tgt_single_step(RtemsDebugMsg msg);
 
-/* this routine is called after exception handler returns. It must
- * call LONGJMP
- */
-void rtems_debug_handle_exception(int signo);
+/* Generic (architecture independent) routines */
 
 /* this routine is called by the exception handler to notify
  * the stub daemon that a task has run into an exception.
@@ -86,14 +87,19 @@ void rtems_debug_handle_exception(int signo);
  * on the interrupted thread's stack).
  * 
  * Since the interrupted task is suspended by 
- * 'rtems_debug_notify_and_suspend()', a message on the stack
+ * 'rtems_gdb_notify_and_suspend()', a message on the stack
  * exists until the task is resumed (e.g. after continuing
  * from a breakpoint). The caller will have filled-in the
  * 'contSig' field, in this case.
+ *
+ * RETURNS: 0 on success, nonzero on failure (e.g., during
+ *          shutdown). The architecture dependent code should
+ *          transfer control to the original exception handler
+ *          if this routine returns a non-zero value.
  */
-void rtems_debug_notify_and_suspend(RtemsDebugMsg);
+int rtems_gdb_notify_and_suspend(RtemsDebugMsg);
 
-void rtems_debug_breakpoint();
+void rtems_gdb_breakpoint();
 
 /* obtain the TCB of a thread.
  * NOTE that thread dispatching is enabled
@@ -103,5 +109,24 @@ void rtems_debug_breakpoint();
 
 Thread_Control *
 rtems_gdb_get_tcb_dispatch_off(rtems_id tid);
-	
+
+/* Debugging; the 'rtems_remote_debug' variable can be set to a 'ORed' 
+ *            bitset. Note: this var can be set using gdb itself :-)
+ */
+#define DEBUG_SCHED (1<<0)	/* log task switching, stopping, resuming, etc. */
+#define DEBUG_SLIST (1<<1)  /* log what happens on the 'stopped' list       */
+#define DEBUG_COMM  (1<<2)  /* log remcom proto messages to/from gdb        */
+#define DEBUG_STACK (1<<3)  /* log stack switching related messages         */
+
+extern volatile int rtems_remote_debug;
+
+/* Selective breakpoints: The GDB remote protocol has no provision to set
+ *                        breakpoints on a pre-thread basis. You can set
+ *                        this variable (e.g., from GDB) to a thread id
+ *                        and (currently all) breakpoints are then only
+ *                        active for the selected TID.
+ */
+extern volatile rtems_id rtems_gdb_break_tid;
+
+
 #endif

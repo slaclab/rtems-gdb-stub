@@ -21,4 +21,29 @@ static inline void BREAKPOINT()
 
 #include "rtems-gdb-stub.h"
 
+#define USE_GDB_REDZONE
+
+#ifndef USE_GDB_REDZONE
+/* see switch_stack.c for more explanations */
+
+/* SP and BP are the same thing on PPC */
+#define SP_GET(sp)  do { asm volatile ("mr %0,1":"=r"(sp)); } while(0)
+#define BP_GET(bp)  do { asm volatile ("mr %0,1":"=r"(bp)); } while(0)
+#define FLIP_REGS(diff) do { asm volatile("add 1, 1, %0"::"r"(diff)); } while (0)
+#define FRAME_SZ   (((EXCEPTION_FRAME_END+1200+15)&~15)>>2)
+/* EABI alignment req */
+#define STACK_ALIGNMENT 16
+#define SP(f)		((unsigned long)(f)->GPR1)
+#define PC(f)		((unsigned long)(f)->EXC_SRR0)
+#endif
+
+
+/* Frame is needed by 'switch_stack.c' but also by the ppc
+ * specific code - hence it is outside of the REDZONE ifdef
+ */
+typedef struct FrameRec_ {
+	struct FrameRec_ *up;
+	unsigned 		  lr;
+} FrameRec, *Frame;
+
 #endif
