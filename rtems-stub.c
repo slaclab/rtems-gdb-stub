@@ -138,16 +138,8 @@
 #error need target specific helper implementation
 #endif
 
-/* special messages */
-#define GDB_NET  1
-#define GDB_KILL 0
-
 #define TID_ANY ((rtems_id)0)
 #define TID_ALL ((rtems_id)-1)
-
-#define GDB_KILL_EVENT RTEMS_EVENT_0
-#define GDB_NET_EVENT  RTEMS_EVENT_1
-#define GDB_SIG_EVENT  RTEMS_EVENT_2
 
 /************************************************************************
  *
@@ -181,6 +173,7 @@ static inline void flushDebugChars()
 /* BUFMAX defines the maximum number of characters in inbound/outbound buffers*/
 /* at least NUMREGBYTES*2 are needed for register packets */
 #define BUFMAX 400
+#define EXTRABUFSZ	200
 #define STATIC 
 
 #define CTRLC  3
@@ -192,7 +185,14 @@ static inline void flushDebugChars()
 #  define BUFMAX (2*NUMREGBYTES+100)
 #endif
 
-static char initialized=0;  /* boolean flag. != 0 means we've been initialized */
+#if BUFMAX < 2*(EXTRABUFSZ+15)
+#undef BUFMAX
+#define BUFMAX	(2*(EXTRABUFSZ+15))
+#endif
+
+static volatile char initialized=0;  /* boolean flag. != 0 means we've been initialized */
+
+static rtems_id gdb_pending_id = 0;
 
 int     rtems_remote_debug = 4;
 /*  debug >  0 prints ill-formed commands in valid packets & checksum errors */ 
@@ -208,7 +208,7 @@ task_switch_to(RtemsDebugMsg m, rtems_id new_tid);
 static int
 task_resume(RtemsDebugMsg m, int sig);
 
-static RtemsDebugMsg getFirstMsg();
+static RtemsDebugMsg getFirstMsg(int);
 
 /* list of threads that have stopped */
 static CdllNodeRec anchor   = { &anchor, &anchor };
@@ -466,9 +466,11 @@ volatile rtems_id  rtems_gdb_break_tid = 0;
 static void sowake(struct socket *so, caddr_t arg)
 {
 rtems_status_code sc;
+
 	if ( *(int*)arg ) {
-		sc = rtems_event_send(rtems_gdb_tid, GDB_NET_EVENT);
+		sc = rtems_semaphore_flush(gdb_pending_id);
 	}
+
 }
 
 static void cleanup_connection()
@@ -482,7 +484,7 @@ RtemsDebugMsg     msg;
 	rtems_gdb_tgt_remove_all_bpnts();
 
 	/* detach all tasks */
-	while ( (msg=getFirstMsg()) )
+	while ( (msg=getFirstMsg(0)) )
 		task_resume(msg, SIGCONT);
 
 	/* make sure the callback is removed */
@@ -552,13 +554,17 @@ dummy_thread(rtems_task_argument arg)
 #ifdef DUMMY_SUSPENDED
 		rtems_task_suspend(RTEMS_SELF);
 #else
-		asm("sc");
+		BREAKPOINT();
 #endif
 		sleep(1);
 	}
 }
 
 static  RtemsDebugMsgRec  currentEl = {{&currentEl.node,&currentEl.node},0};
+
+static  rtems_id        dummy_tid = 0;
+
+
 /*
  * This function does all command processing for interfacing to gdb.
  */
@@ -573,16 +579,26 @@ rtems_gdb_daemon (rtems_task_argument arg)
   RtemsDebugMsg     msg, current = &currentEl;
   rtems_status_code sc;
   rtems_id          *tid_tab = calloc(1,sizeof(rtems_id)), tid;
+  char				*extrabuf = malloc(EXTRABUFSZ+15);
   int               tidx = 0;
-  rtems_id          dummy_tid = 0;
   int               ehandler_installed=0;
   CexpModule		mod   = 0;
   CexpSym           *psectsyms = 0;
   volatile int      waiting = 0;
-  rtems_event_set   evs = 0;
 
   /* startup / initialization */
   {
+    if ( RTEMS_SUCCESSFUL !=
+		 ( sc = rtems_semaphore_create(
+					rtems_build_name( 'g','d','b','s' ),
+					0,
+					RTEMS_FIFO | RTEMS_COUNTING_SEMAPHORE,
+					0,
+					&gdb_pending_id ) ) ) {
+		gdb_pending_id = 0;
+		rtems_error( sc, "GDBd: unable to create semaphore" );
+		goto cleanup;
+	}
 	if ( !(regbuf = malloc(NUMREGBYTES)) ) {
 		fprintf(stderr,"no memory\n");
 		goto cleanup;
@@ -617,22 +633,17 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	if (rtems_debug_install_ehandler(1))
 		goto cleanup;
 	ehandler_installed=1;
-	if ( !(dummy_tid = thread_helper("GDBh", 200, RTEMS_MINIMUM_STACK_SIZE, dummy_thread, 0)) )
+	if ( !(dummy_tid = thread_helper("GDBh", 200, 20000+RTEMS_MINIMUM_STACK_SIZE, dummy_thread, 0)) )
 		goto cleanup;
   }
 
   initialized = 1;
 
-  /* synchronize with the dummy thread */
-  rtems_event_receive(GDB_KILL_EVENT|GDB_SIG_EVENT, RTEMS_EVENT_ANY | RTEMS_WAIT, RTEMS_NO_TIMEOUT, &evs);
+  while (initialized) {
 
-  if (GDB_KILL_EVENT & evs)
-	goto release_connection;
+	/* synchronize with dummy task */
+	current = getFirstMsg(1);
 
-  if ( ! (current = getFirstMsg()) )
-	current = &currentEl;
-
-  do {
 	{
 	struct sockaddr_in a;
     struct sockwakeup  wkup;
@@ -653,10 +664,14 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
 	while (1) {
 
-	  evs = 0;
       remcomOutBuffer[0] = 0;
 
 	ptr = getpacket();
+
+if (!ptr) {
+	printf("GDB DEAD\n");
+	goto cleanup;
+}
 
 	if (rtems_remote_debug > 2) {
 		printf("Got packet '%c' \n", *ptr);
@@ -781,7 +796,13 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	case 'c':
 		if ( hexToInt(&ptr, &i) ) /* optional addr arg */
 			rtems_gdb_tgt_set_pc(current, i);
-		i   = task_resume( current, 's' == *(ptr-1) ? SIGTRAP : SIGCONT );
+
+		tid     = current->tid;
+
+		i   = task_resume( current, 's' == *(ptr-1) ? SIGTRAP : SIGCONT ); 
+
+		if ( 0 == i )
+			current = 0;
 
 		if ( -2 == i ) {
 			/* target doesn't know how to start single-stepping on
@@ -791,48 +812,47 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			break;
 		}
 
-		/* check if there's another message pending */
-		msg = getFirstMsg();
+		/* check if there's another message pending
+		 * wait only if we succeeded in resuming the
+		 * current thread!
+         */
 
-		if ( msg ) {
-			current = msg;
-		} else if ( 0 == i ) {
 		/* tiny chances for a race condition here -- if they hit the
 		 * button before we set the flag
 		 */
-		do {
 		waiting = 1;
-		rtems_event_receive(GDB_NET_EVENT|GDB_KILL_EVENT|GDB_SIG_EVENT, RTEMS_EVENT_ANY | RTEMS_WAIT, RTEMS_NO_TIMEOUT, &evs);
+		msg = getFirstMsg( 0 == current );
 		waiting = 0;
 
-		tid     = current->tid;
-		current = 0;
-
-		if ( GDB_KILL_EVENT & evs ) {
+		if ( !initialized ) {
 			printf("Daemon killed;\n");
 			goto release_connection;
 		}
-		if (GDB_NET_EVENT & evs) {
-			printf("net event\n");
-			/* should be '\003' */
-			getDebugChar();
-			/* stop the current thread */
-  			current = task_switch_to(current, tid);
+
+		if ( msg ) {
+			current = msg;
 		} else {
-			/* stopped on something in the queue */
-			current = getFirstMsg();
-			/* It's possible that current == NULL, i.e., we got
-			 * probably a leftover event; this can happen
-			 * if we switch to a thread before picking
-			 * it up from here...
+			/* no new message; two possibilities:
+			 * a) current == 0 which means that we
+			 *    successfully resumed and hence waited
+			 *    -> wait interrupted.
+			 * b) current != 0 -> no wait and no other
+			 *    thread pending in queue
+			 */
+
+			if ( ! current ) {
+				printf("net event\n");
+				/* should be '\003' */
+				getDebugChar();
+				/* stop the current thread */
+  				current = task_switch_to(current, tid);
+			}
+			/* else
+			 * couldn't restart the thread. It's dead
+			 * or was already suspended; since there were
+			 * no messages pending, we return the old signal status
 			 */
 		}
-		} while ( !current );
-		} /* else
-		   * couldn't restart the thread. It's dead
-		   * or was already suspended; since there were
-		   * no messages pending, we return the old signal status
-		   */
 
 		sprintf(remcomOutBuffer,"T%02xthread:%08x;",current->sig, current->tid);
 	break;
@@ -870,6 +890,99 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			}
 			*pto = 0;
 			remcomOutBuffer[0]='m';
+		}
+	  } else if ( !strncmp(ptr,"ThreadExtraInfo",15) ) {
+		ptr+=15;
+		if ( ','== *ptr ) {
+			Thread_Control    *thr;
+			Objects_Locations l;
+			States_Control    state = 0xffff;
+			int               pri   = 0;
+			tid = strtol(++ptr,0,16);
+			memset(extrabuf,0,EXTRABUFSZ);
+			if ( (thr=_Thread_Get( tid, &l )) ) {
+				if ( OBJECTS_LOCAL == l ) {
+					Objects_Information *oi;
+					oi = _Objects_Get_information( tid );
+					*extrabuf = '\'';
+					if ( oi->is_string ) {
+						if ( oi->name_length < EXTRABUFSZ ) {
+							_Objects_Copy_name_string( thr->Object.name, extrabuf + 1  );
+						} else {
+							strcpy( extrabuf + 1, "NAME TOO LONG" ); 
+						}
+					} else {
+						_Objects_Copy_name_raw( &thr->Object.name, extrabuf + 1, oi->name_length );
+					}
+					state = thr->current_state;
+					pri   = thr->real_priority;
+				}
+				_Thread_Enable_dispatch();
+				if ( OBJECTS_LOCAL != l )
+					break;
+				i = strlen(extrabuf);
+				extrabuf[i++]='\'';
+				while (i<8)
+					extrabuf[i++]=' ';
+				i+=snprintf(extrabuf+i,EXTRABUFSZ-i,"PRI: %3d STATE:", pri);
+				state = state & STATES_ALL_SET;
+				if ( i<EXTRABUFSZ ) {
+					if ( STATES_READY == state)
+						i+=sprintf(extrabuf+i," ready");
+					else {
+					if ( STATES_DORMANT   & state && i < EXTRABUFSZ ) {
+						i+=sprintf(extrabuf+i," dorm");
+						state &= ~STATES_DORMANT;
+					}
+					if ( STATES_SUSPENDED & state && i < EXTRABUFSZ ) {
+						i+=sprintf(extrabuf+i," susp");
+						state &= ~STATES_SUSPENDED;
+					}
+					if ( STATES_TRANSIENT & state && i < EXTRABUFSZ ) {
+						i+=sprintf(extrabuf+i," trans");
+						state &= ~STATES_TRANSIENT;
+					}
+					if ( STATES_BLOCKED & state && i < EXTRABUFSZ ) {
+						i+=sprintf(extrabuf+i," BLOCKED - ");
+						if ( STATES_DELAYING  & state && i < EXTRABUFSZ )
+							i+=sprintf(extrabuf+i," delyd");
+						if ( STATES_INTERRUPTIBLE_BY_SIGNAL  & state && i < EXTRABUFSZ )
+							i+=sprintf(extrabuf+i," interruptible");
+						if ( STATES_WAITING_FOR_TIME & state && i < EXTRABUFSZ )
+							i+=sprintf(extrabuf+i," time");
+						if ( STATES_WAITING_FOR_BUFFER & state && i < EXTRABUFSZ )
+							i+=sprintf(extrabuf+i," buf");
+
+						if ( STATES_WAITING_FOR_SEGMENT & state && i < EXTRABUFSZ )
+							i+=sprintf(extrabuf+i," seg");
+						if ( STATES_WAITING_FOR_MESSAGE & state && i < EXTRABUFSZ )
+							i+=sprintf(extrabuf+i," msg");
+						if ( STATES_WAITING_FOR_EVENT & state && i < EXTRABUFSZ )
+							i+=sprintf(extrabuf+i," evt");
+						if ( STATES_WAITING_FOR_SEMAPHORE & state && i < EXTRABUFSZ )
+							i+=sprintf(extrabuf+i," sem");
+						if ( STATES_WAITING_FOR_MUTEX & state && i < EXTRABUFSZ )
+							i+=sprintf(extrabuf+i," mtx");
+						if ( STATES_WAITING_FOR_CONDITION_VARIABLE & state && i < EXTRABUFSZ )
+							i+=sprintf(extrabuf+i," cndv");
+						if ( STATES_WAITING_FOR_JOIN_AT_EXIT & state && i < EXTRABUFSZ )
+							i+=sprintf(extrabuf+i," join");
+						if ( STATES_WAITING_FOR_RPC_REPLY & state && i < EXTRABUFSZ )
+							i+=sprintf(extrabuf+i," rpc");
+						if ( STATES_WAITING_FOR_PERIOD & state && i < EXTRABUFSZ )
+							i+=sprintf(extrabuf+i," perio");
+						if ( STATES_WAITING_FOR_SIGNAL & state && i < EXTRABUFSZ )
+							i+=sprintf(extrabuf+i," sig");
+						state &= ~STATES_BLOCKED;
+					}
+					}
+					if ( state && i < EXTRABUFSZ ) {
+						i+=snprintf(extrabuf+i, EXTRABUFSZ-i, "?? (0x%x)", state);
+					}
+				}
+			}
+			if (*extrabuf)
+	  			mem2hex (extrabuf, remcomOutBuffer, i+1);
 		}
 	  } else if ( !strcmp(ptr+1,"CexpFileList") ) {
 	    if ( 'f' == *ptr ) {
@@ -977,13 +1090,15 @@ rtems_gdb_daemon (rtems_task_argument arg)
   }
 release_connection:
   /* make sure attached thread continues */
-  current = task_switch_to(current, dummy_tid);
+  task_resume( current, SIGCONT );
   cleanup_connection();
 
-  } while ( !(GDB_KILL_EVENT & evs) );
+  }
 
 /* shutdown */
 cleanup:
+  if ( gdb_pending_id )
+	rtems_semaphore_delete( gdb_pending_id );
   if (dummy_tid)
   	rtems_task_delete(dummy_tid);
   if ( ehandler_installed ) {
@@ -998,6 +1113,7 @@ cleanup:
   }
   free( regbuf );
   free( tid_tab );
+  free( extrabuf );
 
   rtems_gdb_tid=0;
   rtems_task_delete(RTEMS_SELF);
@@ -1070,7 +1186,7 @@ int
 rtems_debug_start(int pri)
 {
 
-	rtems_gdb_tid = thread_helper("GDBd", 20, 3*RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, 0);
+	rtems_gdb_tid = thread_helper("GDBd", 20, 20000+RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, 0);
 
 	return !rtems_gdb_tid;
 }
@@ -1100,7 +1216,11 @@ void
 rtems_debug_stop()
 {
 int  sd;
-	rtems_event_send(rtems_gdb_tid,GDB_KILL_EVENT);
+
+	/* enqueue a special message */
+	initialized = 0;
+	rtems_semaphore_flush( gdb_pending_id );
+
 	sd = rtems_gdb_sd;
 	rtems_gdb_sd = -1;
 	if ( sd >= 0 )
@@ -1189,6 +1309,7 @@ printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
 						rtems_interrupt_disable(flags);
 						cdll_splerge_tail(&t->node, t->node.p);
 						rtems_interrupt_enable(flags);
+						assert( RTEMS_SUCCESSFUL == rtems_semaphore_obtain( gdb_pending_id, RTEMS_NO_WAIT, RTEMS_NO_TIMEOUT ) );
 						cur = t;
 					} else if ( ( t = threadOnListBwd(&cemetery, new_tid) ) ) {
 						cur = t;
@@ -1210,11 +1331,11 @@ void rtems_debug_notify_and_suspend(RtemsDebugMsg msg)
 {
 	cdll_init_el(&msg->node);
 
-	/* hook into the list */
+		/* hook into the list */
 	cdll_splerge_tail(&anchor, &msg->node);
 
 	/* notify the daemon that a stopped thread is available */
-	rtems_event_send(rtems_gdb_tid, GDB_SIG_EVENT);
+	rtems_semaphore_release(gdb_pending_id);
 
 	/* hackish but it should work:
 	 * rtems_task_suspend should work for other APIs also...
@@ -1223,13 +1344,33 @@ void rtems_debug_notify_and_suspend(RtemsDebugMsg msg)
 	rtems_task_suspend( msg->tid );
 }
 
-static RtemsDebugMsg getFirstMsg()
+static RtemsDebugMsg getFirstMsg(int block)
 {
-CdllNode msg;
-unsigned long flags;
+CdllNode			msg;
+unsigned long		flags;
+rtems_status_code	sc;
+
+	if ( block ) {
+		sc = rtems_semaphore_obtain(gdb_pending_id, RTEMS_WAIT, RTEMS_NO_TIMEOUT);
+		if ( RTEMS_UNSATISFIED == sc ) {
+			/* someone interrupted us by flushing the semaphore */
+			return 0;
+		} else {
+			assert( RTEMS_SUCCESSFUL == sc );
+		}
+	}
+
 	rtems_interrupt_disable(flags);
 	msg = cdll_dequeue_head(&anchor);
 	rtems_interrupt_enable(flags);
-	return (RtemsDebugMsg)(msg == &anchor ? 0 : msg);
+
+	if ( msg == &anchor ) {
+		return 0;
+	}
+
+	if ( !block ) {
+		assert( RTEMS_SUCCESSFUL == rtems_semaphore_obtain( gdb_pending_id, RTEMS_NO_WAIT, RTEMS_NO_TIMEOUT) );
+	}
+	return (RtemsDebugMsg)msg;
 }
 
