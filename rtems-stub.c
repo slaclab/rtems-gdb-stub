@@ -119,7 +119,6 @@
 #include <errno.h>
 #include <stdlib.h>
 
-typedef struct RtemsDebugMsgRec_ *RtemsDebugMsg;
 
 #ifdef __PPC__
 #include "rtems-gdb-stub-ppc-shared.h"
@@ -133,12 +132,6 @@ typedef struct RtemsDebugMsgRec_ *RtemsDebugMsg;
 
 #define TID_ANY ((rtems_id)0)
 #define TID_ALL ((rtems_id)-1)
-
-typedef struct RtemsDebugMsgRec_ {
-	rtems_id	    tid;
-	RtemsDebugFrame frm;
-	int             sig;
-} RtemsDebugMsgRec;
 
 /************************************************************************
  *
@@ -182,12 +175,15 @@ static inline void flushDebugChars()
 #  define BUFMAX 2*NUMREGBYTES+100
 #endif
 
-static char initialized;  /* boolean flag. != 0 means we've been initialized */
+static char initialized=0;  /* boolean flag. != 0 means we've been initialized */
 
 int     rtems_remote_debug = 4;
 /*  debug >  0 prints ill-formed commands in valid packets & checksum errors */ 
 
 static const char hexchars[]="0123456789abcdef";
+
+static rtems_id
+thread_helper(char *nm, int pri, int stack, void (*fn)(rtems_task_argument), rtems_task_argument arg);
 
 /************* jump buffer used for setjmp/longjmp **************************/
 STATIC jmp_buf remcomEnv;
@@ -385,15 +381,6 @@ hex2mem (buf, mem, count)
   return (mem);
 }
 
-/* a bus error has occurred, perform a longjmp
-   to return execution and allow handling of the error */
-
-STATIC void
-handle_buserror ()
-{
-  longjmp (remcomEnv, 1);
-}
-
 /* this function takes the 68000 exception number and attempts to 
    translate this number into a unix compatible signal value */
 STATIC int
@@ -512,6 +499,7 @@ hexToInt (char **ptr, int *intValue)
 }
 
 rtems_id       rtems_gdb_q    = 0;
+rtems_id       rtems_gdb_tid  = 0;
 int            rtems_gdb_sd   = -1;
 
 static void sowake(struct socket *so, caddr_t arg)
@@ -557,8 +545,12 @@ again:
 			cur = 0;
 			_Thread_Disable_dispatch();
 			for ( api=0; api<=OBJECTS_APIS_LAST; api++ ) {
+printk("API %i\n",api);
 				info = _Objects_Information_table[api][1/* thread class for all APIs*/];
+				if ( !info )
+					continue;
 				for ( i=0; i<info->maximum && (c=info->local_table[i]); i++ ) {
+printk("I %i\n",i);
 					t[cur++] = c->id;
 					if ( cur >= max ) {
 						/* table was extended since we determined the maximum; try again */
@@ -574,11 +566,20 @@ again:
 	return t;
 }
 
+static void
+dummy_thread(rtems_task_argument arg)
+{
+	while (1) {
+		rtems_debug_breakpoint ();
+		sleep(1);
+	}
+}
+
 /*
  * This function does all command processing for interfacing to gdb.
  */
 STATIC void
-rtems_gdb_daemon ()
+rtems_gdb_daemon (rtems_task_argument arg)
 {
   int stepping;
   int addr, length;
@@ -590,6 +591,7 @@ rtems_gdb_daemon ()
   rtems_status_code sc;
   rtems_id          contTid  = 0;
   rtems_id          *tid_tab = calloc(1,sizeof(rtems_id));
+  rtems_id          dummy_tid = 0;
   int               ehandler_installed=0;
 
   /* startup / initialization */
@@ -607,6 +609,7 @@ rtems_gdb_daemon ()
 			RTEMS_DEFAULT_ATTRIBUTES,
 			&rtems_gdb_q) )
 		goto cleanup;
+
     /* create socket */
     rtems_gdb_sd = socket(PF_INET, SOCK_STREAM, 0);
 	if ( rtems_gdb_sd < 0 ) {
@@ -642,7 +645,11 @@ rtems_gdb_daemon ()
 	if (rtems_debug_install_ehandler(1))
 		goto cleanup;
 	ehandler_installed=1;
+	if ( !(dummy_tid = thread_helper("GDBh", 200, RTEMS_MINIMUM_STACK_SIZE, dummy_thread, 0)) )
+		goto cleanup;
   }
+
+  initialized = 1;
 
   while (1) {
 	if ( rtems_gdb_strm )
@@ -741,6 +748,7 @@ rtems_gdb_daemon ()
 	case 'g':		/* return the value of the CPU registers */
 	  if (!havestate(&msg))
 		break;
+	  rtems_gdb_tgt_f2r(regbuf, msg.frm, msg.tid);
 	  mem2hex ((char *) regbuf, remcomOutBuffer, NUMREGBYTES);
 	  break;
 	case 'G':		/* set the value of the CPU registers - return OK */
@@ -883,6 +891,8 @@ release_connection:
 
 /* shutdown */
 cleanup:
+  if (dummy_tid)
+  	rtems_task_delete(dummy_tid);
   if ( ehandler_installed ) {
 	rtems_debug_install_ehandler(0);
   }
@@ -900,6 +910,7 @@ cleanup:
   free( regbuf );
   free( tid_tab );
 
+  rtems_gdb_tid=0;
   rtems_task_delete(RTEMS_SELF);
 }
 
@@ -915,38 +926,66 @@ rtems_debug_breakpoint ()
     BREAKPOINT ();
 }
 
+void rtems_debug_handle_exception(int signo)
+{
+	longjmp(remcomEnv,1);
+}
+
+static rtems_id
+thread_helper(char *nm, int pri, int stack, void (*fn)(rtems_task_argument), rtems_task_argument arg)
+{
+char              *buf = malloc(100);
+rtems_status_code sc;
+rtems_id          rval = 0;
+
+
+	if ( 0==pri )
+		pri = 100;
+
+	if ( 0==stack )
+		stack = RTEMS_MINIMUM_STACK_SIZE;
+
+	memset(buf,'x',4);
+	if (nm)
+		strncpy(buf,nm,4);
+	else
+		nm="<NULL>";
+
+	sc = rtems_task_create(	
+			rtems_build_name(buf[0],buf[1],buf[2],buf[3]),
+			pri,
+			stack,
+			RTEMS_DEFAULT_MODES,
+			RTEMS_LOCAL | RTEMS_FLOATING_POINT,
+			&rval);
+	if ( RTEMS_SUCCESSFUL != sc ) {
+		sprintf(buf,"Creating task '%s'",nm);
+		goto cleanup;
+	}
+
+	sc = rtems_task_start(rval, fn, arg);
+	if ( RTEMS_SUCCESSFUL != sc ) {
+		sprintf(buf,"Starting task '%s'",nm);
+		rtems_task_delete(rval);
+		goto cleanup;
+	}
+
+cleanup:
+	if ( RTEMS_SUCCESSFUL != sc ) {
+		rtems_error(sc, buf);
+		rval = 0;
+	}
+	free(buf);
+	return rval;
+}
+
 int
 rtems_debug_start(int pri)
 {
-rtems_status_code sc;
-rtems_id          tid = 0;
 
-	if (0==pri)
-		pri = 20;
+	rtems_gdb_tid = thread_helper("GDBd", 20, 3*RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, 0);
 
-	sc = rtems_task_create(	
-			rtems_build_name('G','D','B','d'),
-			pri,
-			3*RTEMS_MINIMUM_STACK_SIZE,
-			RTEMS_DEFAULT_MODES,
-			RTEMS_LOCAL | RTEMS_FLOATING_POINT,
-			&tid);
-	if ( RTEMS_SUCCESSFUL != sc ) {
-		rtems_error(sc, "Creating GDB daemon task");
-		goto cleanup;
-	}
-
-	sc = rtems_task_start(tid, rtems_gdb_daemon, (rtems_task_argument)0);
-	if ( RTEMS_SUCCESSFUL != sc ) {
-		rtems_error(sc, "Starting GDB daemon");
-		goto cleanup;
-	}
-	tid = 0;
-
-cleanup:
-	if ( tid )
-		rtems_task_delete(tid);
-	return sc;
+	return !rtems_gdb_tid;
 }
 
 int
@@ -986,9 +1025,8 @@ rtems_status_code
 testDummySend()
 {
 extern void *dummyFrame;
-RtemsDebugMsgRec msg;
+RtemsDebugMsgRec msg={0};
 	msg.tid = 0xdeadbeef;
-	msg.frm = 0;
 	msg.sig = 3;
 	return rtems_message_queue_send(rtems_gdb_q,&msg,sizeof(msg));
 }

@@ -15,20 +15,11 @@ typedef BSP_Exception_frame *RtemsDebugFrame;
 #define NUMREGBYTES (32*4+32*8+2*4+5*4)
 
 
-void
-rtems_gdb_tgt_f2r(unsigned char *buf, RtemsDebugFrame f, rtems_id tid);
-
-void
-rtems_gdb_tgt_r2f(RtemsDebugFrame f, rtems_id tid, unsigned char *buf);
-
 static inline void BREAKPOINT()
 {
 	asm volatile("sc");
 }
 
-extern rtems_id rtems_gdb_q;
+#include "rtems-gdb-stub.h"
 
-/* install / uninstall exception handler */
-int
-rtems_debug_install_ehandler(int action);
 #endif
