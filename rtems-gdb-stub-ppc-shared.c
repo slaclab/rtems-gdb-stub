@@ -51,10 +51,17 @@ static BpntRec bpnts[NUM_BPNTS] = {{0}};
 #define TRAPNO(opcode) ((int)(((opcode) & 0xffff0000) == TRAP(0) ? (opcode)&0xffff : -1))
 
 #ifndef USE_GDB_REDZONE
-static void
-switch_stack(RtemsDebugMsg m);
-#else
-#define switch_stack(m) rtems_debug_notify_and_suspend(m)
+/* SP and BP are the same thing on PPC */
+#define SP_PUT(val) do { asm volatile("mr 1,%0"::"r"(val):"memory"); } while (0)
+#define SP_GET(sp)  do { asm volatile ("mr %0,1":"=r"(sp)); } while(0)
+#define BP_PUT(val) do { asm volatile("mr 1,%0"::"r"(val):"memory"); } while (0)
+#define BP_GET(bp)  do { asm volatile ("mr %0,1":"=r"(bp)); } while(0)
+#define FRAME_SZ   (((EXCEPTION_FRAME_END+1200+15)&~15)>>2)
+/* EABI alignment req */
+#define STACK_ALIGNMENT 16
+#define SP(f)		((unsigned long)(f)->GPR1)
+#define PC(f)		((unsigned long)(f)->EXC_SRR0)
+#include "switch_stack.c"
 #endif
 
 static inline unsigned long
@@ -297,7 +304,11 @@ printk("\n");
         return;
 	} else {
 
+#ifdef USE_GDB_REDZONE
+		rtems_debug_notify_and_suspend(&msg);
+#else
 		switch_stack(&msg);
+#endif
 printk("Resumed from exception; contSig %i, sig %i, GPR1 0x%08x PC 0x%08x LR 0x%08x\n",
 			msg.contSig, msg.sig, msg.frm->GPR1, msg.frm->EXC_SRR0, msg.frm->EXC_LR);
 
@@ -333,122 +344,6 @@ printk("Resumed from exception; contSig %i, sig %i, GPR1 0x%08x PC 0x%08x LR 0x%
 	origHandler(f);
 }
 
-#ifndef USE_GDB_REDZONE
-
-/* max number of simultaneously stopped threads */
-#define NUM_FRAMES	40
-
-#define FRAME_SZ (((EXCEPTION_FRAME_END+1200+15)&~15)>>2)
-
-#define RELOC(ptr) ((void*)((diff)+(unsigned long)(ptr)))
-
-typedef union GdbStackFrameU_ *GdbStackFrame;
-
-typedef union GdbStackFrameU_ {
-	struct {
-		unsigned long frame[FRAME_SZ];
-		unsigned long lrroom[4];
-	} stack;
-	GdbStackFrame next;
-} GdbStackFrameU
-/* EABI alignment req */
-__attribute__((aligned(16)));
-
-static GdbStackFrameU savedStack[NUM_FRAMES] = {{{{0}}}};
-static GdbStackFrame freeList = 0;
-
-
-static void 
-flip_stack(Frame top, long diff)
-{
-Frame fix;
-Frame sp;
-
-	asm volatile ("mr %0,1":"=r"(sp));
-
-printk("OLD BOS %x -> %x\n",sp,  *(unsigned long*)sp);
-printk("OLD TOS %x -> %x\n",top, *(unsigned long*)top);
-
-	/* fixup the frame pointers */
-	for (fix = sp; fix < top; ) {
-		fix->up = RELOC(fix->up);
-		fix = fix->up;
-	}
-	memcpy(RELOC(sp), sp, (unsigned)top - (unsigned)sp);
-	/* switch to new stack */
-	asm volatile("mr 1,%0"::"r"(RELOC(sp)):"memory");
-
-/* DEBUG: purge the old region; make sure it works */
-memset((void*)sp,0,(unsigned)top - (unsigned)sp);
-
-printk("NEW BOS %x -> %x\n",RELOC(sp),*(unsigned long*)RELOC(sp));
-printk("NEW TOS %x -> %x\n",RELOC(top),*(unsigned long*)RELOC(top));
-}
-
-static void
-switch_stack(RtemsDebugMsg m)
-{
-GdbStackFrame volatile stk;
-unsigned long diff;
-
-	/* Here comes creepy stuff:
-	 * GDB expects us to leave the stack as 
-	 * the interrupted function left it.
-	 * However, the whole exception handler has
-	 * been using the thread stack which conflicts
-	 * with this GDB requirement. Hence, we
-	 * save everything into a separate area and
-	 * switch the stack pointer.
-	 */
-
-	/* allocate a frame */
-	if ( !(stk=freeList) )
-		rtems_fatal_error_occurred(RTEMS_NO_MEMORY);
-
-	freeList  = freeList->next;
-	stk->next = 0;
-
-	/* fixup the exception frame pointer */
-	/* copy frame; hopefully nobody upstream in the call stack
-	 * uses other pointers into the frame...
-	 */
-
-	diff      =  (unsigned long)(stk->stack.frame+FRAME_SZ);
-	diff     -=  (unsigned long)m->frm->GPR1;
-
-printk("OLD STK %x\n",stk);
-
-	flip_stack((Frame)m->frm->GPR1, diff);
-
-printk("NEW STK %x\n",stk);
-
-	m = RELOC(m);
-	m->frm = RELOC(m->frm);
-
-	rtems_debug_notify_and_suspend(m);
-
-	/* calculate diff again - GPR1 might have magically changed!!
-	 * because gdb can push stuff on the stack (which is the main
-	 * reason why we do the stack switching in the first place)
-	 */
-	diff      =  (unsigned long)m->frm->GPR1;
-	diff     -=  (unsigned long)(stk->stack.frame+FRAME_SZ);
-
-	/* switch back */
-	flip_stack((Frame)stk->stack.lrroom,diff);
-
-m = RELOC(m); m->frm = RELOC(m->frm);
-printk("BACK resuming at PC %x SP %x\n",m->frm->EXC_SRR0, m->frm->GPR1);
-
-	/* free up the frame -- this context runs until the
-	 * frame is popped without interruption, hence adding
-	 * it to the free list should be safe.
-	 */
-
-	stk->next = freeList;
-	freeList  = stk;
-}
-#endif
 
 int
 rtems_debug_install_ehandler(int action)
@@ -459,8 +354,7 @@ rtems_unsigned32 flags;
 	if ( action ) {
 #ifndef USE_GDB_REDZONE
 		/* initialize stack frame list */
-		for ( freeList = savedStack + (NUM_FRAMES-1); freeList > savedStack; freeList-- )
-			(freeList-1)->next = freeList;
+		init_stack();
 #endif
 	}
 
@@ -511,6 +405,8 @@ rtems_gdb_tgt_insdel_breakpoint(int doins, int addr, int len)
 Bpnt            found, slot;
 volatile unsigned long   opcode, subst;
 
+	if ( len > 4 )
+		return -1;
 
 	for ( found = bpnts + (NUM_BPNTS - 1), slot = 0;
 		  found >= bpnts;

@@ -111,6 +111,13 @@ register CdllNode b = a->n;
 	return b;
 }
 
+static inline CdllNode
+cdll_remove_el(CdllNode b)
+{
+	cdll_splerge_head(b->p,b);
+	return b;
+}
+
 static inline void cdll_init_el(CdllNode el)
 {
 	el->p = el->n = el;

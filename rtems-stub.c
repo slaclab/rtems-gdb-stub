@@ -110,7 +110,11 @@ unsigned long flags;
 	rtems_interrupt_enable(flags);
 }
 
-int     rtems_remote_debug = 4;
+#define DEBUG_SCHED (1<<0)
+#define DEBUG_SLIST (1<<1)
+#define DEBUG_COMM  (1<<2)
+
+int     rtems_remote_debug = DEBUG_SCHED | DEBUG_SLIST;
 /*  debug >  0 prints ill-formed commands in valid packets & checksum errors */ 
 
 static const char hexchars[]="0123456789abcdef";
@@ -149,54 +153,36 @@ CdllNode n;
 	return 0;
 }
 
-static inline RtemsDebugMsg
+STATIC inline RtemsDebugMsg
 msgHeadDeQ(CdllNode list)
 {
 RtemsDebugMsg rval = (RtemsDebugMsg)cdll_dequeue_head(list);
-	return  &rval->node == list ? 0 : rval;
+	if ( &rval->node == list )
+		return 0;
+	assert( rval->node.p == rval->node.n && &rval->node == rval->node.p );
+	return  rval;
 }
 
-static RtemsDebugMsg
+STATIC RtemsDebugMsg
 msgAlloc()
 {
 RtemsDebugMsg rval = msgHeadDeQ(&freeList);
 	if ( !rval && (rval = calloc(1, sizeof(RtemsDebugMsgRec))) ) {
 		cdll_init_el(&rval->node);	
 	}
+	assert( rval->node.p == rval->node.n && &rval->node == rval->node.p );
 	return rval;
 }
 
-static void
+STATIC void
 msgFree(RtemsDebugMsg msg)
 {
+	assert( msg->node.p == msg->node.n && &msg->node == msg->node.p );
 	cdll_splerge_head(&freeList, (CdllNode)msg);
 }
 
 /************* jump buffer used for setjmp/longjmp **************************/
 STATIC jmp_buf remcomEnv;
-
-#ifdef OBSOLETE_IO
-STATIC int
-hex (ch)
-     char ch;
-{
-  if ((ch >= 'a') && (ch <= 'f'))
-    return (ch - 'a' + 10);
-  if ((ch >= '0') && (ch <= '9'))
-    return (ch - '0');
-  if ((ch >= 'A') && (ch <= 'F'))
-    return (ch - 'A' + 10);
-  return (-1);
-}
-#else
-STATIC int
-hex(unsigned char ch)
-{
-int rval = toupper(ch);
-	return rval > '9' ? rval-'A'+10 : rval-'0';
-}
-
-#endif
 
 STATIC char remcomInBuffer[BUFMAX];
 STATIC char remcomOutBuffer[BUFMAX];
@@ -205,84 +191,18 @@ STATIC char remcomOutBuffer[BUFMAX];
 	  do { if ( (ch = getDebugChar()) < 0 ) { if (ch) perror("GETCHAR"); else fprintf(stderr,"GETCHAR ZERO\n"); return 0;} }  while (0)
 
 #ifdef OBSOLETE_IO
+#include "obsolete_io.c"
+#  define hex2int hexToInt
+#  define getpacket(buf) getpacket()
+#else
 
-STATIC unsigned char *
-getpacket (void)
+STATIC int
+hex(unsigned char ch)
 {
-  unsigned char *buffer = &remcomInBuffer[0];
-  unsigned char checksum;
-  unsigned char xmitcsum;
-  int count;
-  int ch;
-
-  while (1)
-    {
-      /* wait around for the start character, ignore all other characters */
-	  do {
-		GETCHAR();
-      } while (ch != '$')
-	;
-
-    retry:
-      checksum = 0;
-      xmitcsum = -1;
-      count = 0;
-
-      /* now, read until a # or end of buffer is found */
-      while (count < BUFMAX)
-	{
-	  GETCHAR();
-	  if (ch == '$')
-	    goto retry;
-	  if (ch == '#')
-	    break;
-	  checksum = checksum + ch;
-	  buffer[count] = ch;
-	  count = count + 1;
-	}
-      buffer[count] = 0;
-
-      if (ch == '#')
-	{
-	  GETCHAR();
-	  xmitcsum = hex (ch) << 4;
-	  GETCHAR();
-	  xmitcsum += hex (ch);
-
-	  if (checksum != xmitcsum)
-	    {
-	      if (rtems_remote_debug)
-		{
-		  fprintf (stderr,
-			   "bad checksum.  My count = 0x%x, sent=0x%x. buf=%s\n",
-			   checksum, xmitcsum, buffer);
-		}
-	      putDebugChar ('-');	/* failed checksum */
-          flushDebugChars();
-	    }
-	  else
-	    {
-          unsigned char *rval;
-	      putDebugChar ('+');	/* successful transfer */
-
-	      /* if a sequence char is present, reply the sequence ID */
-	      if (buffer[2] == ':')
-		{
-		  putDebugChar (buffer[0]);
-		  putDebugChar (buffer[1]);
-
-		  rval = &buffer[3];
-		} else {
-		  rval = &buffer[0];
-		}
-		flushDebugChars();
-		return rval;
-	    }
-	}
-    }
+int rval = toupper(ch);
+	return rval > '9' ? rval-'A'+10 : rval-'0';
 }
 
-#else
 /* scan for the sequence $<data>#<checksum>     */
 STATIC unsigned char *
 getpacket(unsigned char *buf)
@@ -340,44 +260,6 @@ synchronize:
 	return buf;
 }
 
-#endif
-
-#ifdef OBSOLETE_IO
-STATIC int
-putpacket (buffer)
-     char *buffer;
-{
-  unsigned char checksum;
-  int count;
-  char ch;
-
-  /*  $<packet info>#<checksum>. */
-  do
-    {
-      putDebugChar ('$');
-      checksum = 0;
-      count = 0;
-      while ( (ch = buffer[count]) )
-	{
-	  putDebugChar (ch);
-	  checksum += ch;
-	  count += 1;
-	}
-
-      putDebugChar ('#');
-      putDebugChar (hexchars[checksum >> 4]);
-      putDebugChar (hexchars[checksum % 16]);
-      flushDebugChars();
-	if ( rtems_remote_debug > 2 ) {
-		fprintf(stderr,"Putting packet (len %i)\n",count);
-	}
-
-
-	  count = getDebugChar();
-  } while ( count > 0 && count != '+');
-  return count <= 0;
-}
-#else
 /* send the packet in NULL terminated buffer. */
 STATIC int
 putpacket(char *buf)
@@ -394,22 +276,14 @@ register int           i;
 		putDebugChar(hexchars[chks>>4]);
 		putDebugChar(hexchars[chks & 0xf]);
 		flushDebugChars();
-		if ( rtems_remote_debug > 2 ) {
+		if ( rtems_remote_debug & DEBUG_COMM ) {
 			fprintf(stderr,"Putting packet: %s\n",buf);
 		}
 		i = getDebugChar();
 	} while ( i > 0 && '+' != i );
-fprintf(stderr,"PUTPACK return i %i\n",i);
+	if ( rtems_remote_debug & DEBUG_COMM)
+		fprintf(stderr,"PUTPACK return i %i\n",i);
 	return i<=0;	
-}
-
-#endif
-
-STATIC void
-debug_error (char *format, char *parm)
-{
-  if (rtems_remote_debug)
-    fprintf (stderr, format, parm);
 }
 
 /* Convert binary data to null terminated hex string;
@@ -428,26 +302,35 @@ register unsigned char ch;
 	return buf;
 }
 
-#ifdef OBSOLETE
-/* return a pointer to the last char put in buf (null) */
+/* Convert hex string to binary; return a pointer to the byte
+ * after the last one written
+ */
+
 STATIC char *
-mem2hex (mem, buf, count)
-     char *mem;
-     char *buf;
-     int count;
+hex2mem(char *buf, char *mem, int len)
 {
-  int i;
-  unsigned char ch;
-  for (i = 0; i < count; i++)
-    {
-      ch = *mem++;
-      *buf++ = hexchars[ch >> 4];
-      *buf++ = hexchars[ch % 16];
-    }
-  *buf = 0;
-  return (buf);
+	while (len--) {
+		*mem    = (hex(*buf++) << 4);
+		*mem++ +=  hex(*buf++);
+	}
+	return mem;
 }
-#endif
+
+/* Convert hex string into number; return number of chars converted */
+STATIC int
+hex2int(char **ppch, int *pval)
+{
+register int n,val;
+register unsigned char ch;
+
+	for (n=val=0; (ch=**ppch, isxdigit(ch)); n++, (*ppch)++) {
+		val = (val<<4) + hex(ch);
+	}
+	*pval = val;
+	return n;
+}
+
+#endif /* OBSOLETE_IO */
 
 /* integer to BE hex; buffer must be large enough */
 STATIC char *
@@ -467,80 +350,11 @@ register int j = 2*sizeof(i);
 	return buf+2*sizeof(i);
 }
 
-/* Convert hex string to binary; return a pointer to the byte
- * after the last one written
- */
-
-STATIC char *
-hex2mem(char *buf, char *mem, int len)
+STATIC void
+debug_error (char *format, char *parm)
 {
-	while (len--) {
-		*mem    = (hex(*buf++) << 4);
-		*mem++ +=  hex(*buf++);
-	}
-	return mem;
-}
-
-#ifdef OBSOLETE
-STATIC char *
-hex2mem (buf, mem, count)
-     char *buf;
-     char *mem;
-     int count;
-{
-  int i;
-  unsigned char ch;
-  for (i = 0; i < count; i++)
-    {
-      ch = hex (*buf++) << 4;
-      ch = ch + hex (*buf++);
-      *mem++ = ch;
-    }
-  return (mem);
-}
-#endif
-
-/**********************************************/
-/* WHILE WE FIND NICE HEX CHARS, BUILD AN INT */
-/* RETURN NUMBER OF CHARS PROCESSED           */
-/**********************************************/
-STATIC int
-hexToInt (char **ptr, int *intValue)
-{
-  int numChars = 0;
-  int hexValue;
-
-  *intValue = 0;
-
-  while (**ptr)
-    {
-      hexValue = hex (**ptr);
-      if (hexValue >= 0)
-	{
-	  *intValue = (*intValue << 4) | hexValue;
-	  numChars++;
-	}
-      else
-	break;
-
-      (*ptr)++;
-    }
-
-  return (numChars);
-}
-
-/* Convert hex string into number; return number of chars converted */
-STATIC int
-hex2int(char **ppch, int *pval)
-{
-register int n,val;
-register unsigned char ch;
-
-	for (n=val=0; (ch=**ppch, isxdigit(ch)); n++, (*ppch)++) {
-		val = (val<<4) + hex(ch);
-	}
-	*pval = val;
-	return n;
+  if (rtems_remote_debug)
+    fprintf (stderr, format, parm);
 }
 
 volatile rtems_id  rtems_gdb_tid       = 0;
@@ -569,7 +383,9 @@ int rval, do_free;
 	if ( tid ) {
 		m = threadOnListBwd(&stopped, tid);
 		if ( m ) {
-			cdll_splerge_tail(&m->node, m->node.p);
+			if ( rtems_remote_debug & DEBUG_SLIST )
+				fprintf(stderr,"stopped: removed %x\n", m->tid);
+			cdll_remove_el(&m->node);
 			/* see comment below why we use 'do_free' */
 			do_free = (m->frm == 0);
 			rval = task_resume(m,sig);
@@ -581,11 +397,12 @@ int rval, do_free;
 			fprintf(stderr,"Unable to resume 0x%08x -- not found on stopped list\n", tid);
 			rval = -1;
 		}
-		return rval;
 	} else {
 		rval = 0;
 		/* release all currently stopped threads */
 		while ( (m=msgHeadDeQ(&stopped)) ) {
+			if ( rtems_remote_debug & DEBUG_SLIST )
+				fprintf(stderr,"stopped: removed %x from head\n", m->tid);
 			do_free = (m->frm == 0);
 			/* cannot access 'msg' after resuming. If it
 			 * was a 'real', i.e., non-frameless message then
@@ -593,7 +410,8 @@ int rval, do_free;
 			 * thread.
 			 */
 			if ( task_resume(m, sig) ) {
-fprintf(stderr,"Task resume %x FAILURE\n",m->tid);
+				if ( rtems_remote_debug & DEBUG_SCHED )
+					fprintf(stderr,"Task resume %x FAILURE\n",m->tid);
 				rval = -1;
 			}
 			if ( do_free ) {
@@ -627,7 +445,7 @@ static void cleanup_connection()
 {
 struct sockwakeup wkup = {0};
 
-	if (rtems_remote_debug > 1)
+	if ( rtems_remote_debug & DEBUG_SCHED )
 		printf("Releasing connection\n");
 
 	detach_all_tasks();
@@ -893,7 +711,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	{
 	struct sockaddr_in a;
     struct sockwakeup  wkup;
-	size_t             a_s = sizeof(a);
+	int                a_s = sizeof(a);
 	if ( (sd = accept(rtems_gdb_sd, (struct sockaddr *)&a, &a_s)) < 0 ) {
 		perror("GDB daemon: accept");
 		goto cleanup;
@@ -914,8 +732,8 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
     remcomOutBuffer[0] = 0;
 
-	if (rtems_remote_debug > 2) {
-		printf("Got packet '%c' \n", *ptr);
+	if ( rtems_remote_debug & DEBUG_COMM ) {
+		printf("Got packet '%s' \n", ptr);
 	}
 
 	if ( current || unAttachedCmd(*ptr) ) {
@@ -968,7 +786,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
     case 'H':
       {
 		tid = strtol(ptr+1,0,16);
-		if ( rtems_remote_debug ) {
+		if ( rtems_remote_debug & DEBUG_SCHED ) {
 			printf("New 'H%c' thread id set: 0x%08x\n",*ptr,tid);
 		}
 #ifndef ONETHREAD_TEST
@@ -1069,7 +887,16 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
 		if ( current ) {
 			tid  = current->tid;
-			i   = resume_stopped_task(cont_tid, contsig);
+
+			/* we're only want to know if resuming the current thread was successful */
+			if ( !cont_tid || cont_tid == tid )
+				i = resume_stopped_task( tid, contsig );
+			else
+				i = -1;
+
+			if ( cont_tid != tid )
+				resume_stopped_task( cont_tid, contsig );
+
 		} else {
 			i   = 0;
 			tid = rtems_gdb_break_tid;
@@ -1117,7 +944,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		} else {
 			if ( 0 == setjmp(remcomEnv) ) {
 				/* try to compute crc */
-				sprintf(remcomOutBuffer,"C%x",crc32((char*)addr, len, -1));
+				sprintf(remcomOutBuffer,"C%x",(unsigned)crc32((char*)addr, len, -1));
 			} else {
 	      		strcpy (remcomOutBuffer, "E03");
 	      		debug_error ("%s\n","bus error");
@@ -1254,8 +1081,11 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			/* software breakpoint */
 			if ( 0 == setjmp(remcomEnv) ) {
 				/* try to write breakpoint */
-				rtems_gdb_tgt_insdel_breakpoint('Z'==op[0],addr,len);
-				strcpy(remcomOutBuffer,"OK");
+				if ( rtems_gdb_tgt_insdel_breakpoint('Z'==op[0],addr,len) ) {
+					strcpy(remcomOutBuffer,"E16");
+				} else {
+					strcpy(remcomOutBuffer,"OK");
+				}
 			} else {
 	      		strcpy (remcomOutBuffer, "E03");
 	      		debug_error ("%s\n","bus error");
@@ -1277,10 +1107,6 @@ rtems_gdb_daemon (rtems_task_argument arg)
   } /* interpreter loop */
 release_connection:
   /* make sure attached thread continues */
-#ifdef OBSOLETE
-  if ( current )
-  	task_resume( current, SIGCONT );
-#endif
   cleanup_connection();
 
   }
@@ -1371,10 +1197,15 @@ cleanup:
 	return rval;
 }
 
+rtems_id blah_tid = 0;
 void blah()
 {
 	while (1) {
 		sleep(8);
+		printf("Hippel\n");
+		printf("Pippel\n");
+		printf("Kippel\n");
+		printf("Nippel\n");
 		BREAKPOINT();
 	}
 	rtems_task_delete(RTEMS_SELF);
@@ -1386,7 +1217,7 @@ rtems_debug_start(int pri)
 
 	rtems_gdb_tid = thread_helper("GDBd", 20, 20000+RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, 0);
 #if 1
-	thread_helper("blah", 200, RTEMS_MINIMUM_STACK_SIZE, blah, 0);
+	blah_tid = thread_helper("blah", 200, RTEMS_MINIMUM_STACK_SIZE, blah, 0);
 #endif
 
 	return !rtems_gdb_tid;
@@ -1400,7 +1231,6 @@ RtemsDebugMsg n;
 		fprintf(stderr,"GDB daemon still running; refuse to unload\n");
 		return -1;
 	}
-	
 	while ( (n = msgHeadDeQ(&freeList)) )
 		free(n);
 	return 0;
@@ -1424,6 +1254,9 @@ rtems_debug_stop()
 {
 int  sd;
 
+	if ( blah_tid )
+		rtems_task_delete(blah_tid);
+	
 	/* enqueue a special message */
 	initialized = 0;
 	rtems_semaphore_flush( gdb_pending_id );
@@ -1442,6 +1275,8 @@ static int
 task_resume(RtemsDebugMsg msg, int sig)
 {
 rtems_status_code sc = -1;
+	if ( rtems_remote_debug & DEBUG_SCHED )
+		fprintf(stderr,"task_resume(%08x, %2i)\n",msg->tid, sig);
 	if ( msg->tid ) {
 
 		/* never really resume the dummy tid */
@@ -1451,7 +1286,8 @@ rtems_status_code sc = -1;
 				return 0;
 			} else {
 				theDummy = 0;
-fprintf(stderr,"STARTING DUMMY with sig %i\n",msg->sig);
+				if ( rtems_remote_debug & DEBUG_SCHED )
+					fprintf(stderr,"STARTING DUMMY with sig %i\n",msg->sig);
 				msg->sig = SIGTRAP;
 			}
 		}
@@ -1474,7 +1310,8 @@ fprintf(stderr,"STARTING DUMMY with sig %i\n",msg->sig);
 				|| 0 == rtems_gdb_tgt_single_step(msg)
 	   */
 			   ) {
-				printf("Resuming 0x%08x with sig %i\n",msg->tid, msg->contSig);
+				if ( rtems_remote_debug & DEBUG_SCHED )
+					fprintf(stderr,"Resuming 0x%08x with sig %i\n",msg->tid, msg->contSig);
 				sc = rtems_task_resume(msg->tid);
 			}
 			return RTEMS_SUCCESSFUL == sc ? 0 : -2;
@@ -1482,6 +1319,9 @@ fprintf(stderr,"STARTING DUMMY with sig %i\n",msg->sig);
 			/* add to cemetery if not there already */
 			if ( &msg->node == msg->node.p )
 				cdll_splerge_tail(&cemetery, &msg->node);
+
+			assert( threadOnListBwd(&cemetery, msg->tid) );
+
 			msg->contSig = 0;
 		}
 	}
@@ -1492,32 +1332,24 @@ fprintf(stderr,"STARTING DUMMY with sig %i\n",msg->sig);
 static RtemsDebugMsg
 task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 {
-printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
+	if ( rtems_remote_debug & DEBUG_SCHED )
+		printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
 
-	if ( cur ) {
-		if ( cur->tid == new_tid )
-			return cur;
-#ifdef OBSOLETE
-		task_resume(cur, SIGCONT);
-#endif
-	}
+	if ( cur && cur->tid == new_tid )
+		return cur;
 
 	if ( new_tid == dummy_tid && theDummy ) {
 		cur = theDummy;
 		if ( ! threadOnListBwd(&stopped, new_tid) ) {
+			if ( rtems_remote_debug & DEBUG_SLIST ) {
+				fprintf(stderr,"stopped list: adding %x to head\n", cur->tid);
+				assert(cur->node.p == cur->node.n && cur->node.n == &cur->node);
+			}
+
 			cdll_splerge_head(&stopped, (CdllNode)cur);
 		}
 		return cur;
 	}
-
-#ifdef OBSOLETE
-	cur = &currentEl;
-
-	memset(cur, 0, sizeof(*cur));
-	cdll_init_el(&cur->node);
-
-	cur->tid = new_tid;
-#endif
 
 	if ( new_tid ) {
 		rtems_status_code sc;
@@ -1538,7 +1370,7 @@ printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
 						unsigned long flags;
 						/* found; dequeue and return */
 						rtems_interrupt_disable(flags);
-						cdll_splerge_tail(&t->node, t->node.p);
+						cdll_remove_el(&t->node);
 						rtems_interrupt_enable(flags);
 						assert( RTEMS_SUCCESSFUL == rtems_semaphore_obtain( gdb_pending_id, RTEMS_NO_WAIT, RTEMS_NO_TIMEOUT ) );
 						SEMA_DEC();
@@ -1581,9 +1413,13 @@ printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
 	/* bring to head of stopped list */
 	if ( threadOnListBwd(&stopped, cur->tid) ) {
 		/* remove */
-		cdll_splerge_tail(&cur->node, cur->node.p);
+		if ( rtems_remote_debug & DEBUG_SLIST )
+			fprintf(stderr,"stopped list: removing %x\n", cur->tid);
+		cdll_remove_el(&cur->node);
 	}
 	/* add to head */
+	if ( rtems_remote_debug & DEBUG_SLIST )
+		fprintf(stderr,"stopped list: adding %x at head\n", cur->tid);
 	cdll_splerge_head(&stopped, (CdllNode)cur);
 return cur;
 }
@@ -1680,6 +1516,11 @@ rtems_status_code	sc;
 		theDummy = msg;
 	}
 	assert( ! threadOnListBwd(&stopped, msg->tid) );
+
+	if ( rtems_remote_debug & DEBUG_SLIST )
+		fprintf(stderr,"stopped list: adding %x\n", msg->tid);
+
+	assert( msg->node.p == &msg->node && msg->node.n == &msg->node );
 	cdll_splerge_head(&stopped, &msg->node);
 	return msg;
 }
@@ -1704,7 +1545,7 @@ Thread_Control		*tcb = 0;
     if (OBJECTS_LOCAL!=loc || !tcb) {
 		if (tcb)
 			_Thread_Enable_dispatch();
-        fprintf(stderr,"Id %x not found on local node\n",tid);
+        printk("Id %x not found on local node\n",tid);
     }
 	return tcb;
 }
@@ -1765,8 +1606,8 @@ RtemsDebugMsg msg;
 	}
 		/* another thread got a signal */
   } while ( !*pcurrent );
-  if ( !threadOnListBwd(&stopped, (*pcurrent)->tid ) ) {
-	fprintf(stderr,"OOPS: msg %x, tid %x stoppedp %x\n",msg,(*pcurrent)->tid, stopped.p);
+  if ( rtems_remote_debug & DEBUG_SCHED && !threadOnListBwd(&stopped, (*pcurrent)->tid ) ) {
+	fprintf(stderr,"OOPS: msg %p, tid %x stoppedp %p\n",msg,(*pcurrent)->tid, stopped.p);
   }
   assert( threadOnListBwd(&stopped, (*pcurrent)->tid) );
   sprintf(buf,"T%02xthread:%08x;",(*pcurrent)->sig, (*pcurrent)->tid);

@@ -53,7 +53,7 @@ CdllNode a;
 
 	printf("removing tail 1");
 	a = anchor.p->p;
-	cdll_splerge_tail(anchor.p, a);
+	cdll_remove_el(a);
 	printf("A dump of 'tail 1'\n");
 	cdllTestDump(a);
 	printf("A dump of the rest\n");
