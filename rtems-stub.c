@@ -77,8 +77,11 @@ post_and_suspend(RtemsDebugMsg msg);
 /* Debugging definitions */
 #define STATIC
 
+/*  debug !=  0 prints ill-formed commands in valid packets & checksum errors */ 
+volatile int rtems_remote_debug = DEBUG_SCHED | DEBUG_SLIST | DEBUG_STACK;
+
 /* Configuration Defs    */
-#define CTRLC  3
+#define CTRLC             3
 #define RTEMS_GDB_Q_LEN 200
 #define RTEMS_GDB_PORT 4444
 
@@ -102,13 +105,13 @@ static volatile char initialized=0;
 
 STATIC rtems_id gdb_pending_id = 0;
 
-int semacount = 0;
+int rtems_gdb_pending = 0;
 
 static inline void SEMA_INC()
 {
 unsigned long flags;
 	rtems_interrupt_disable(flags);
-	semacount++;
+	rtems_gdb_pending++;
 	rtems_interrupt_enable(flags);
 }
 
@@ -116,19 +119,17 @@ static inline void SEMA_DEC()
 {
 unsigned long flags;
 	rtems_interrupt_disable(flags);
-	semacount--;
+	rtems_gdb_pending--;
 	rtems_interrupt_enable(flags);
 }
 
 static void (* volatile rtems_gdb_handle_exception)(int) = 0;
 
-volatile int rtems_remote_debug = DEBUG_SCHED | DEBUG_SLIST | DEBUG_STACK;
-/*  debug >  0 prints ill-formed commands in valid packets & checksum errors */ 
-
 static const char hexchars[]="0123456789abcdef";
 
-static rtems_id
-thread_helper(char *nm, int pri, int stack, void (*fn)(rtems_task_argument), rtems_task_argument arg);
+/* this is generally useful */
+rtems_id
+rtems_gdb_thread_helper(char *nm, int pri, int stack, void (*fn)(rtems_task_argument), rtems_task_argument arg);
 
 static RtemsDebugMsg
 task_switch_to(RtemsDebugMsg m, rtems_id new_tid);
@@ -369,8 +370,8 @@ volatile rtems_id  rtems_gdb_tid       = 0;
 volatile int       rtems_gdb_sd        = -1;
 volatile rtems_id  rtems_gdb_break_tid = 0;
 
-STATIC RtemsDebugMsg	theDummy = 0;
-STATIC unsigned long    dummy_frame_pc;
+STATIC RtemsDebugMsg	theHelperMsg = 0;
+STATIC unsigned long    helper_frame_pc;
 
 static volatile int      waiting = 0;
 
@@ -519,7 +520,7 @@ again:
 }
 
 static void
-dummy_thread(rtems_task_argument arg)
+helper_thread(rtems_task_argument arg)
 {
 	while (1) {
 #ifdef DUMMY_SUSPENDED
@@ -533,7 +534,7 @@ dummy_thread(rtems_task_argument arg)
 
 static  RtemsDebugMsgRec  currentEl = {{&currentEl.node,&currentEl.node},0};
 
-static  rtems_id        dummy_tid = 0;
+static  rtems_id        helper_tid = 0;
 
 static int unAttachedCmd(int ch)
 {
@@ -730,7 +731,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	if (rtems_gdb_tgt_install_ehandler(1))
 		goto cleanup;
 	ehandler_installed=1;
-	if ( !(dummy_tid = thread_helper("GDBh", 200, 20000+RTEMS_MINIMUM_STACK_SIZE, dummy_thread, 0)) )
+	if ( !(helper_tid = rtems_gdb_thread_helper("GDBh", 200, 20000+RTEMS_MINIMUM_STACK_SIZE, helper_thread, 0)) )
 		goto cleanup;
   }
 
@@ -738,13 +739,13 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
   while (initialized) {
 
-	/* synchronize with dummy task */
-	if ( !theDummy ) {
+	/* synchronize with helper task */
+	if ( !theHelperMsg ) {
 		getFirstMsg(1);
-		assert( theDummy );
+		assert( theHelperMsg );
 	}
-	dummy_frame_pc = rtems_gdb_tgt_get_pc( theDummy );
-	current = task_switch_to(0, dummy_tid);
+	helper_frame_pc = rtems_gdb_tgt_get_pc( theHelperMsg );
+	current = task_switch_to(0, helper_tid);
 
 	{
 	struct sockaddr_in a;
@@ -835,9 +836,9 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			cont_tid = tid;
 	  	} else if ( 'g' == *ptr ) {
 			if ( (TID_ALL == tid || TID_ANY == tid) )
-				tid = current->tid ? current->tid : dummy_tid;
+				tid = current->tid ? current->tid : helper_tid;
 			else if ( rtems_gdb_tid == tid )
-				tid = dummy_tid;
+				tid = helper_tid;
 			if ( current->tid == tid )
 				break;
 			current = task_switch_to(current, tid);
@@ -1169,8 +1170,8 @@ release_connection:
 cleanup:
   if ( gdb_pending_id )
 	rtems_semaphore_delete( gdb_pending_id );
-  if (dummy_tid)
-  	rtems_task_delete(dummy_tid);
+  if (helper_tid)
+  	rtems_task_delete(helper_tid);
   if ( ehandler_installed ) {
 	rtems_gdb_tgt_install_ehandler(0);
   }
@@ -1183,6 +1184,8 @@ cleanup:
   }
   free( chrbuf );
   free( tid_tab );
+  while ( (current = msgHeadDeQ(&freeList)) )
+	free(current);
 
   rtems_gdb_tid=0;
   rtems_task_delete(RTEMS_SELF);
@@ -1200,8 +1203,8 @@ rtems_gdb_breakpoint ()
     BREAKPOINT ();
 }
 
-static rtems_id
-thread_helper(char *nm, int pri, int stack, void (*fn)(rtems_task_argument), rtems_task_argument arg)
+rtems_id
+rtems_gdb_thread_helper(char *nm, int pri, int stack, void (*fn)(rtems_task_argument), rtems_task_argument arg)
 {
 char              buf[4];
 rtems_status_code sc;
@@ -1212,7 +1215,7 @@ rtems_id          rval = 0;
 		pri = 100;
 
 	if ( 0==stack )
-		stack = RTEMS_MINIMUM_STACK_SIZE;
+		stack = 2*RTEMS_MINIMUM_STACK_SIZE;
 
 	memset(buf,'x',sizeof(buf));
 	if (nm)
@@ -1246,7 +1249,9 @@ cleanup:
 	return rval;
 }
 
+#ifdef DEBUG_SECOND_THREAD
 rtems_id blah_tid = 0;
+
 void blah()
 {
 	while (1) {
@@ -1259,6 +1264,7 @@ void blah()
 	}
 	rtems_task_delete(RTEMS_SELF);
 }
+#endif
 
 int
 rtems_gdb_start(int pri)
@@ -1271,9 +1277,9 @@ rtems_gdb_start(int pri)
 	init_stack();
 #endif
 
-	rtems_gdb_tid = thread_helper("GDBd", pri, 20000+RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, 0);
-#if 0
-	blah_tid = thread_helper("blah", 200, RTEMS_MINIMUM_STACK_SIZE, blah, 0);
+	rtems_gdb_tid = rtems_gdb_thread_helper("GDBd", pri, 20000+RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, 0);
+#ifdef DEBUG_SECOND_THREAD
+	blah_tid = rtems_gdb_thread_helper("blah", 200, RTEMS_MINIMUM_STACK_SIZE, blah, 0);
 #endif
 	return !rtems_gdb_tid;
 }
@@ -1281,25 +1287,16 @@ rtems_gdb_start(int pri)
 int
 _cexpModuleFinalize(void *h)
 {
-RtemsDebugMsg n;
 	if ( rtems_gdb_tid ) {
 		fprintf(stderr,"GDB daemon still running; refuse to unload\n");
 		return -1;
 	}
-	while ( (n = msgHeadDeQ(&freeList)) )
-		free(n);
 	return 0;
 }
-
-
-struct sockaddr_in blahaddr = {0};
 
 void
 _cexpModuleInitialize(void *h)
 {
-    blahaddr.sin_family = AF_INET;
-    blahaddr.sin_port   = htons(RTEMS_GDB_PORT);
-
  	rtems_gdb_start(40);
 }
 
@@ -1308,8 +1305,10 @@ rtems_gdb_stop()
 {
 int  sd;
 
+#ifdef DEBUG_SECOND_THREAD
 	if ( blah_tid )
 		rtems_task_delete(blah_tid);
+#endif
 	
 	/* enqueue a special message */
 	initialized = 0;
@@ -1322,7 +1321,7 @@ int  sd;
 	return 0;
 }
 
-/* restart the thread provided that it exists and
+/* Restart the thread provided that it exists and
  * isn't suspended due to a 'real' exception (as opposed to
  * a breakpoint).
  */
@@ -1330,17 +1329,20 @@ static int
 task_resume(RtemsDebugMsg msg, int sig)
 {
 rtems_status_code sc = -1;
+
 	if ( rtems_remote_debug & DEBUG_SCHED )
 		fprintf(stderr,"task_resume(%08x, %2i)\n",msg->tid, sig);
+
 	if ( msg->tid ) {
 
-		/* never really resume the dummy tid */
-		if ( msg->tid == dummy_tid ) {
-		    if ( dummy_frame_pc == rtems_gdb_tgt_get_pc( msg ) ) {
-				theDummy = msg;
+		/* never really resume the helper tid */
+		if ( msg->tid == helper_tid ) {
+		    if ( helper_frame_pc == rtems_gdb_tgt_get_pc( msg ) ) {
+				/* let helper task is just hanging there */
+				theHelperMsg = msg;
 				return 0;
 			} else {
-				theDummy = 0;
+				theHelperMsg = 0;
 				if ( rtems_remote_debug & DEBUG_SCHED )
 					fprintf(stderr,"STARTING DUMMY with sig %i\n",msg->sig);
 				msg->sig = SIGTRAP;
@@ -1384,6 +1386,16 @@ rtems_status_code sc = -1;
 }
 
 
+/* Attach to a new task, suspending it if necessary
+ * and record it on the list of stopped threads:
+ * 
+ * a) when switching to the helper, check if it is
+ *    still waiting
+ * b) if the target thread is already suspended,
+ *    search the 'signalled', 'stopped' and 'cemetery'
+ *    lists for its message/frame info.
+ */
+
 static RtemsDebugMsg
 task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 {
@@ -1392,12 +1404,12 @@ task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 
 	assert( new_tid );
 
-	if ( new_tid == dummy_tid && theDummy ) {
-		/* dummy thread is still stopped in its tracks;
+	if ( new_tid == helper_tid && theHelperMsg ) {
+		/* helper thread is still stopped in its tracks;
 		 * just pick it up...
 		 */
-		cur = theDummy;
-		theDummy = 0;
+		cur = theHelperMsg;
+		theHelperMsg = 0;
 	} else if ( !cur || cur->tid != new_tid ) {
 		/* only try to suspend if we really switch threads */
 		rtems_status_code sc;
@@ -1449,13 +1461,13 @@ task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 			default:
 				rtems_error(sc, "suspending target thread 0x%08x failed", new_tid);
 				/* thread might have gone away; attach to helper */
-				cur = theDummy; theDummy = 0;
+				cur = theHelperMsg; theHelperMsg = 0;
 			break;
 		}
 	}
-	if ( cur->tid == dummy_tid ) {
-		assert( !theDummy );
-		theDummy = cur;
+	if ( cur->tid == helper_tid ) {
+		assert( !theHelperMsg );
+		theHelperMsg = cur;
 	}
 	/* bring to head of stopped list */
 	if ( threadOnListBwd(&stopped, cur->tid) ) {
@@ -1471,9 +1483,12 @@ task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 return cur;
 }
 
-/* must call this from inside 'switch_stack' with
+/* Must call this from inside 'switch_stack' with
  * properly relocated pointers...
  */
+
+/* !! THIS IS CALLED FROM EXCEPTION HANDLER (ISR) CONTEXT !! */
+
 static void post_and_suspend(RtemsDebugMsg msg)
 {
 	cdll_init_el(&msg->node);
@@ -1503,7 +1518,25 @@ static void post_and_suspend(RtemsDebugMsg msg)
 	}
 }
 
-/* this is called from exception handler (ISR) context !! */
+/* Helper routine for architecture implementations. 
+ *
+ * 1) If the daemon itself got an exception check
+ *    if it expects to handle it and branch to the
+ *    handler if it does. Return non-zero otherwise
+ *    to flag a fatal error (in exception context --
+ *    the daemon will end up suspended and dead).
+ *
+ * 2) Deal with thread specific breakpoints.
+ *
+ * 3) Invoke the stack switcher if necessary
+ *    (see switch_stack.c)
+ *
+ * 4) Post a message to the queue to let the
+ *    daemon know a task got a signal.
+ */
+
+/* !! THIS IS CALLED FROM EXCEPTION HANDLER (ISR) CONTEXT !! */
+
 int rtems_gdb_notify_and_suspend(RtemsDebugMsg msg)
 {
 	if ( !initialized ) 
@@ -1554,6 +1587,13 @@ int rtems_gdb_notify_and_suspend(RtemsDebugMsg msg)
 	return 0;
 }
 
+/* get the first message from the queue of tasks
+ * that recived a signal and were suspended by
+ * the exception handler.
+ * So wait for a message to arrive if the argument
+ * is non-zero.
+ */
+
 static RtemsDebugMsg getFirstMsg(int block)
 {
 RtemsDebugMsg		msg;
@@ -1579,27 +1619,45 @@ rtems_status_code	sc;
 		return 0;
 
 	if ( !block ) {
-		assert( RTEMS_SUCCESSFUL == rtems_semaphore_obtain( gdb_pending_id, RTEMS_NO_WAIT, RTEMS_NO_TIMEOUT) );
+		assert( RTEMS_SUCCESSFUL == rtems_semaphore_obtain(
+										gdb_pending_id,
+										RTEMS_NO_WAIT,
+										RTEMS_NO_TIMEOUT) );
 		SEMA_DEC();
 	}
-	if ( msg->tid == dummy_tid ) {
-		assert( !theDummy );
-		theDummy = msg;
+
+	if ( msg->tid == helper_tid ) {
+		/* if the helper ran into a breakpoint, it must
+		 * have been due to GDB pushing a dummy frame
+		 * and tampering with its PC. We then really
+		 * restarted it and must therefore have no
+		 * 'theHelperMsg'.
+		 */
+		assert( !theHelperMsg );
+		theHelperMsg = msg;
 	}
+
+	/* Do a few paranoia checks */
+
+	/* a thread that just got a signal cannot be on the
+	 * stopped list
+	 */
 	assert( ! threadOnListBwd(&stopped, msg->tid) );
+	/* it also must be a single node; not on any list */
+	assert( msg->node.p == &msg->node && msg->node.n == &msg->node );
 
 	if ( rtems_remote_debug & DEBUG_SLIST )
 		fprintf(stderr,"stopped list: adding %x\n", msg->tid);
 
-	assert( msg->node.p == &msg->node && msg->node.n == &msg->node );
+	/* record this task on the stopped list */
 	cdll_splerge_head(&stopped, &msg->node);
 	return msg;
 }
 
 /* obtain the TCB of a thread.
- * NOTE that thread dispatching is enabled
+ * NOTE that thread dispatching is DISABLED
  *      if this operation is successful
- *      (and disabled if unsuccessful)
+ *      (and re-enabled if unsuccessful)
  */
 
 Thread_Control *
@@ -1664,11 +1722,13 @@ RtemsDebugMsg msg;
 #if 0
 			/* stop the current thread */
 #else
-			/* GDB seems to switch to the 'last stopped'
-			 * thread which can be annoying. For now,
-			 * we just switch always to the dummy tid
+			/* GDB seems to switch to the thread that
+			 * last stopped on a breakpoint which can
+			 * be annoying.
+			 * For now, * we just switch always to the
+			 * helper.
 			 */
-			tid = dummy_tid;
+			tid = helper_tid;
 #endif
 			if ( !tid ) {
 				/* nothing attached yet */
@@ -1693,11 +1753,16 @@ RtemsDebugMsg msg;
 	}
 		/* another thread got a signal */
   } while ( !*pcurrent );
-  if ( (rtems_remote_debug & DEBUG_SCHED) && !threadOnListBwd(&stopped, (*pcurrent)->tid ) ) {
-	fprintf(stderr,"OOPS: msg %p, tid %x stoppedp %p\n",msg,(*pcurrent)->tid, stopped.p);
+
+  if (     (rtems_remote_debug & DEBUG_SCHED)
+		&& ! threadOnListBwd(&stopped, (*pcurrent)->tid ) ) {
+	fprintf(stderr,"OOPS: msg %p, tid %x stoppedp %p\n", msg, (*pcurrent)->tid, stopped.p);
   }
+  
   assert( threadOnListBwd(&stopped, (*pcurrent)->tid) );
+
   sprintf(buf,"T%02xthread:%08x;",(*pcurrent)->sig, (*pcurrent)->tid);
+
 return 0;
 }
 
