@@ -185,6 +185,9 @@ static const char hexchars[]="0123456789abcdef";
 static rtems_id
 thread_helper(char *nm, int pri, int stack, void (*fn)(rtems_task_argument), rtems_task_argument arg);
 
+static void
+task_switch_to(RtemsDebugMsg m, rtems_id new_tid);
+
 /************* jump buffer used for setjmp/longjmp **************************/
 STATIC jmp_buf remcomEnv;
 
@@ -354,11 +357,16 @@ STATIC char *
 intToHex(int i, char *buf)
 {
 register int j = 2*sizeof(i);
+
+    if ( i< 0 ) {
+		*buf++='-';
+		i = -i;
+	}
 	buf[j--]=0;
 	do {
 		buf[j--] = hexchars[i&0xf];
 		i>>=4;
-	} while ( j>0 );
+	} while ( j>=0 );
 	return buf+2*sizeof(i);
 }
 
@@ -520,14 +528,14 @@ static void cleanup_connection()
 static int
 havestate(RtemsDebugMsg m)
 {
-	if ( TID_ANY == m->tid || TID_ALL == m->tid || !m->frm ) {
+	if ( TID_ANY == m->tid || TID_ALL == m->tid ) {
 		strcpy(remcomOutBuffer,"E12");
 		return 0;
 	}
 	return 1;
 }
 
-static rtems_id *
+STATIC rtems_id *
 get_tid_tab(rtems_id *t)
 {
 int                 max, cur, i, api;
@@ -537,20 +545,25 @@ Objects_Control		*c;
 	{
 again:
 		/* get current estimate */
-		for ( max=0, api=0; api<=OBJECTS_APIS_LAST; api++ )
-			max += _Objects_Information_table[api][1/* thread class for all APIs*/]->maximum;
+		for ( max=0, api=0; api<=OBJECTS_APIS_LAST; api++ ) {
+			Objects_Information **apiinfo = _Objects_Information_table[api];
+			if ( apiinfo && (info = apiinfo[1/* thread class for all APIs*/] ) )
+				max += info->maximum;
+		}
 		t = realloc(t, sizeof(rtems_id)*(max+1));
 
 		if ( t ) {
 			cur = 0;
 			_Thread_Disable_dispatch();
 			for ( api=0; api<=OBJECTS_APIS_LAST; api++ ) {
-printk("API %i\n",api);
-				info = _Objects_Information_table[api][1/* thread class for all APIs*/];
-				if ( !info )
+				Objects_Information **apiinfo = _Objects_Information_table[api];
+				if ( !apiinfo
+                    || !(info = apiinfo[1/* thread class for all APIs*/] )
+					|| !info->local_table )
 					continue;
-				for ( i=0; i<info->maximum && (c=info->local_table[i]); i++ ) {
-printk("I %i\n",i);
+				for ( i=1; i<=info->maximum; i++ ) {
+					if (!(c=info->local_table[i]))
+						continue;
 					t[cur++] = c->id;
 					if ( cur >= max ) {
 						/* table was extended since we determined the maximum; try again */
@@ -570,7 +583,7 @@ static void
 dummy_thread(rtems_task_argument arg)
 {
 	while (1) {
-		rtems_debug_breakpoint ();
+		rtems_task_suspend(RTEMS_SELF);
 		sleep(1);
 	}
 }
@@ -586,11 +599,11 @@ rtems_gdb_daemon (rtems_task_argument arg)
   char              *ptr, *chpt;
   char              *regbuf = 0;
   int               sd;
-  RtemsDebugMsgRec  msg = {0};
+  RtemsDebugMsgRec  msg = {0}, current = {0};
   int               msgsize;
   rtems_status_code sc;
-  rtems_id          contTid  = 0;
   rtems_id          *tid_tab = calloc(1,sizeof(rtems_id));
+  int               tidx = 0;
   rtems_id          dummy_tid = 0;
   int               ehandler_installed=0;
 
@@ -670,6 +683,8 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
 	while (1) {
 
+#if 0
+TODO switch to new task
 	if ( RTEMS_SUCCESSFUL !=
          (sc = rtems_message_queue_receive(
             rtems_gdb_q, 
@@ -717,6 +732,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
   remcomOutBuffer[3] = 0;
 
   putpacket (remcomOutBuffer);
+#endif
 
   stepping = 0;
 
@@ -738,36 +754,41 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	  break;
 	case '?':
 	  remcomOutBuffer[0] = 'S';
-	  remcomOutBuffer[1] = hexchars[msg.sig >> 4];
-	  remcomOutBuffer[2] = hexchars[msg.sig % 16];
+	  remcomOutBuffer[1] = hexchars[current.sig >> 4];
+	  remcomOutBuffer[2] = hexchars[current.sig % 16];
 	  remcomOutBuffer[3] = 0;
 	  break;
 	case 'd':
 	  rtems_remote_debug = !(rtems_remote_debug);	/* toggle debug flag */
 	  break;
 	case 'g':		/* return the value of the CPU registers */
-	  if (!havestate(&msg))
+	  if (!havestate(&current))
 		break;
-	  rtems_gdb_tgt_f2r(regbuf, msg.frm, msg.tid);
+	  rtems_gdb_tgt_f2r(regbuf, current.frm, current.tid);
 	  mem2hex ((char *) regbuf, remcomOutBuffer, NUMREGBYTES);
 	  break;
 	case 'G':		/* set the value of the CPU registers - return OK */
-	  if (!havestate(&msg))
+	  if (!havestate(&current))
 		break;
 	  hex2mem (ptr, (char *) regbuf, NUMREGBYTES);
-	  rtems_gdb_tgt_r2f(msg.frm, msg.tid, regbuf);
+	  rtems_gdb_tgt_r2f(current.frm, current.tid, regbuf);
 	  strcpy (remcomOutBuffer, "OK");
 	  break;
 
     case 'H':
       { rtems_id tid;
 	  	sscanf(ptr+1,"%i",&tid);
-	  if ( 'c' == *ptr ) {
-		contTid = tid;
+	  	if ( 'c' == *ptr ) {
+	  	} else if ( 'g' == *ptr ) {
+	  	}
 		if ( rtems_remote_debug ) {
-			printf("New 'C' thread id set: 0x%08x\n",contTid);
+			printf("New 'H' thread id set: 0x%08x\n",tid);
 		}
-	  }
+		if ( TID_ALL == tid || TID_ANY == tid || rtems_gdb_tid == tid )
+			tid = dummy_tid;
+		if ( current.tid == tid )
+			break;
+		task_switch_to(&current, tid);
 	  }
     break;
 
@@ -860,7 +881,6 @@ rtems_gdb_daemon (rtems_task_argument arg)
       if ( !strcmp(ptr,"Offsets") ) {
 		/* ignore; use values from file */
 	  } else if ( !strcmp(ptr+1,"ThreadInfo") ) {
-		int tidx = 0;
 		if ( 'f' == *ptr ) {
 			tidx = 0;
 			/* TODO get thread snapshot */
@@ -874,10 +894,26 @@ rtems_gdb_daemon (rtems_task_argument arg)
 				*chpt++ = ',';
 				chpt    = intToHex(tid_tab[tidx++], chpt);
 			}
+			*chpt = 0;
 			remcomOutBuffer[0]='m';
+printf(">>%s<<\n",remcomOutBuffer);
 		}
 	  }
 	  break;
+
+	  case 'T':
+		{
+		rtems_status_code sc;
+		rtems_id tid;
+			strcpy(remcomOutBuffer,"E01");
+			tid = strtol(ptr,0,16);
+			/* use a cheap call to find out if this is still alive ... */
+			sc = rtems_task_is_suspended(tid);
+			if ( RTEMS_SUCCESSFUL == sc || RTEMS_ALREADY_SUSPENDED == sc )
+				strcpy(remcomOutBuffer,"OK");
+		}	
+	  break;
+
 	}			/* switch */
 
       /* reply to the request */
@@ -934,7 +970,7 @@ void rtems_debug_handle_exception(int signo)
 static rtems_id
 thread_helper(char *nm, int pri, int stack, void (*fn)(rtems_task_argument), rtems_task_argument arg)
 {
-char              *buf = malloc(100);
+char              buf[4];
 rtems_status_code sc;
 rtems_id          rval = 0;
 
@@ -945,7 +981,7 @@ rtems_id          rval = 0;
 	if ( 0==stack )
 		stack = RTEMS_MINIMUM_STACK_SIZE;
 
-	memset(buf,'x',4);
+	memset(buf,'x',sizeof(buf));
 	if (nm)
 		strncpy(buf,nm,4);
 	else
@@ -959,23 +995,21 @@ rtems_id          rval = 0;
 			RTEMS_LOCAL | RTEMS_FLOATING_POINT,
 			&rval);
 	if ( RTEMS_SUCCESSFUL != sc ) {
-		sprintf(buf,"Creating task '%s'",nm);
+		rtems_error(sc, "Creating task '%s'",nm);
 		goto cleanup;
 	}
 
 	sc = rtems_task_start(rval, fn, arg);
 	if ( RTEMS_SUCCESSFUL != sc ) {
-		sprintf(buf,"Starting task '%s'",nm);
+		rtems_error(sc, "Starting task '%s'",nm);
 		rtems_task_delete(rval);
 		goto cleanup;
 	}
 
 cleanup:
 	if ( RTEMS_SUCCESSFUL != sc ) {
-		rtems_error(sc, buf);
 		rval = 0;
 	}
-	free(buf);
 	return rval;
 }
 
@@ -1021,12 +1055,27 @@ int  sd;
 		close(sd);
 }
 
-rtems_status_code
-testDummySend()
+static void
+task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 {
-extern void *dummyFrame;
-RtemsDebugMsgRec msg={0};
-	msg.tid = 0xdeadbeef;
-	msg.sig = 3;
-	return rtems_message_queue_send(rtems_gdb_q,&msg,sizeof(msg));
+	if ( cur->tid ) {
+		if ( cur->contSig )
+			*cur->contSig = SIGCONT;
+		/* if we attached to an already sleeping thread, don't resume */
+		if ( cur->frm || SIGSTOP == cur->sig )
+			rtems_task_resume(cur->tid);
+	}
+	memset(cur,0,sizeof(*cur));
+	cur->tid = new_tid;
+	if ( new_tid ) {
+		rtems_status_code sc;
+		switch ( (sc = rtems_task_suspend( new_tid )) ) {
+			case RTEMS_SUCCESSFUL:        cur->sig = SIGSTOP; break;
+			case RTEMS_ALREADY_SUSPENDED: cur->sig = SIGCHLD; break;
+			default:
+				cur->tid = 0;
+				rtems_error(sc, "suspending target thread 0x%08x failed", new_tid);
+			break;
+		}
+	}
 }

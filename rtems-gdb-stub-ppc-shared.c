@@ -12,11 +12,19 @@
 #include <stdio.h>
 #include <signal.h>
 
+typedef struct FrameRec_ {
+	struct FrameRec_ *up;
+	void		 *lr;
+} FrameRec, *Frame;
+
 static Thread_Control *
 get_tcb(rtems_id tid)
 {
 Objects_Locations	loc;
 Thread_Control		*tcb = 0;
+
+	if ( !tid )
+		return 0;
 
 	tcb = _Thread_Get(tid, &loc);
 
@@ -28,71 +36,97 @@ Thread_Control		*tcb = 0;
 	return tcb;
 }
 
-#define FPSCR_OFF (32*4+32*8+2*4+4*4)
+#define GPR0_OFF  (0)
+#define FPR0_OFF  (32*4)
+#define PC___OFF  (32*4+32*8+4*0)
+#define PS___OFF  (32*4+32*8+4*1)
+#define CR___OFF  (32*4+32*8+4*2)
+#define LR___OFF  (32*4+32*8+4*3)
+#define CTR__OFF  (32*4+32*8+4*4)
+#define XER__OFF  (32*4+32*8+4*6)
+#define FPSCR_OFF (32*4+32*8+4*7)
 
 /* map exception frame into register array (GDB layout) */
 void
 rtems_gdb_tgt_f2r(unsigned char *buf, RtemsDebugFrame f, rtems_id tid)
 {
-Thread_Control *tcb = 0;
+Thread_Control *tcb;
+int            deadbeef = 0xdeadbeef, i;
 
-printf("Converting frame 0x%08x, GPR1: 0x%08x\n",f,f->GPR1);
+	memset(buf, 0, NUMREGBYTES);
 
-	memcpy(buf, &f->GPR0, 32*4);
-	buf+=32*4;
+	if ( f ) {
+		memcpy(buf + GPR0_OFF, &f->GPR0, 32*4);
+		memcpy(buf, &f->EXC_SRR0, 4);
+		memcpy(buf, &f->EXC_SRR1, 4);
+		memcpy(buf, &f->EXC_CR,   4);
+		memcpy(buf, &f->EXC_LR,   4);
+		memcpy(buf, &f->EXC_CTR,  4);
+		memcpy(buf, &f->EXC_XER,  4);
+	} else {
+		memcpy(buf + GPR0_OFF, &deadbeef, 4);
+		for ( i = 3*4; i < 13*4; i+=4 )
+			memcpy(buf + (GPR0_OFF + i), &deadbeef, 4);
+		memcpy(buf + XER__OFF, &deadbeef, 4);
+		memcpy(buf + CTR__OFF, &deadbeef, 4);
+	}
 
-	if ( tid && (tcb = get_tcb(tid)) ) {
+	if ( (tcb = get_tcb(tid)) ) {
 		Context_Control_fp *fpc = tcb->fp_context;
 		if ( fpc ) {
-			memcpy(buf, &fpc->f[0], 32*8 );
-			memcpy(buf + (FPSCR_OFF - 32*4), &fpc->fpscr, 4);
-		} else {
-			tcb = 0;
+			memcpy(buf + FPR0_OFF, &fpc->f[0], 32*8 );
+			memcpy(buf + FPSCR_OFF, &fpc->fpscr, 4);
+		}
+		if (!f) {
+			Frame sfr = (Frame)tcb->Registers.gpr1;
+			if (!sfr->lr)
+				sfr = sfr->up;
+			/* dummy up from the TCB */
+			memcpy(buf + GPR0_OFF+4,    &tcb->Registers.gpr1,       2 *4);
+			memcpy(buf + GPR0_OFF+4*13, &tcb->Registers.gpr13, (32-13)*4);
+			memcpy(buf + LR___OFF,      &sfr->lr,                      4);
+			memcpy(buf + CR___OFF,      &tcb->Registers.cr,            4);
+			memcpy(buf + PC___OFF,      &tcb->Registers.pc,            4);
+			memcpy(buf + PS___OFF,      &tcb->Registers.msr,           4);
 		}
 		_Thread_Enable_dispatch();
 	}
-	if ( !tcb )
-		memset(buf, 0, 32*8);
-	buf += 32*8;
-
-	/* PC / PS */
-	memcpy(buf, &f->EXC_SRR0, 4); buf += 4;
-	memcpy(buf, &f->EXC_SRR1, 4); buf += 4;
-	memcpy(buf, &f->EXC_CR,   4); buf += 4;
-	memcpy(buf, &f->EXC_LR,   4); buf += 4;
-	memcpy(buf, &f->EXC_CTR,  4); buf += 4;
-	memcpy(buf, &f->EXC_XER,  4); buf += 4;
-    buf += 4; /* fpscr done already */
 }
 
 void
 rtems_gdb_tgt_r2f(RtemsDebugFrame f, rtems_id tid, unsigned char *buf)
 {
-Thread_Control *tcb;
-	memcpy(&f->GPR0, buf, 32*4);
-	buf+=32*4;
+Thread_Control *tcb = 0;
+
+	if ( f ) {
+		memcpy(&f->GPR0,     buf + GPR0_OFF, 32*4);
+		memcpy(&f->EXC_SRR0, buf + PC___OFF, 4);
+		memcpy(&f->EXC_SRR1, buf + PS___OFF, 4);
+		memcpy(&f->EXC_CR,   buf + CR___OFF, 4);
+		memcpy(&f->EXC_LR,   buf + LR___OFF, 4);
+		memcpy(&f->EXC_CTR,  buf + CTR__OFF, 4);
+		memcpy(&f->EXC_XER,  buf + XER__OFF, 4);
+	}
 
 	if ( tid && (tcb = get_tcb(tid)) ) {
 		Context_Control_fp *fpc = tcb->fp_context;
 		if ( fpc ) {
-			memcpy(&fpc->f[0], buf, 32*8 );
-			memcpy(&fpc->fpscr,  0, sizeof(fpc->fpscr));
-			memcpy(&fpc->fpscr,  buf + (FPSCR_OFF-32*4),4);
-		} else {
-			tcb = 0;
+			memcpy(&fpc->f[0],   buf+FPR0_OFF,    32*8 );
+			memset(&fpc->fpscr,  0,               sizeof(fpc->fpscr));
+			memcpy(&fpc->fpscr,  buf + FPSCR_OFF, 4);
+		}
+		if ( !f ) {
+			/* setup TCB */
+			memcpy(&tcb->Registers.gpr1,  buf + (GPR0_OFF + 4),         2 *4);
+			memcpy(&tcb->Registers.gpr13, buf + (GPR0_OFF + 4*13), (32-13)*4);
+/*			memcpy(&((Frame)tcb->Registers.gpr1)->lr, buf + LR___OFF, 4);       */
+			memcpy(&tcb->Registers.pc,    buf + PC___OFF, 4);
+			memcpy(&tcb->Registers.msr,   buf + PS___OFF, 4);
+			memcpy(&tcb->Registers.cr,    buf + CR___OFF, 4);
 		}
 		_Thread_Enable_dispatch();
 	}
-	buf += 32*8;
 
-	/* PC / PS */
-	memcpy(&f->EXC_SRR0, buf, 4); buf += 4;
-	memcpy(&f->EXC_SRR1, buf, 4); buf += 4;
-	memcpy(&f->EXC_CR,   buf, 4); buf += 4;
-	memcpy(&f->EXC_LR,   buf, 4); buf += 4;
-	memcpy(&f->EXC_CTR,  buf, 4); buf += 4;
-	memcpy(&f->EXC_XER,  buf, 4); buf += 4;
-	buf += 4; /* fpscr done already */
 }
 
 BSP_Exception_frame dummyFrame = {0};
@@ -172,6 +206,7 @@ printk("Task %x got exception %i, frame %x, GPR1 %x\n",
 		__asm__ __volatile__("isync");
 	}
 	if ( msg.tid == rtems_gdb_tid ) {
+		origHandler(f);
 		f->EXC_SRR0 = (unsigned long)rtems_debug_handle_exception;
 		f->GPR3     = msg.sig;
         return;
