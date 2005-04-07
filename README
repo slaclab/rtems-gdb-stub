@@ -1,0 +1,110 @@
+$Id$
+
+RTEMS-GDB-STUB
+
+Till Straumann <strauman|at|slac.stanford.edu>
+3/14/2005
+
+INTRODUCTION/FEATURES
+=====================
+
+Architecture
+- - - - - - -
+
+This gdb stub is an implementation of the remote end of the
+GDB 'remote' protocol for a RTEMS target. Unlike other stubs
+available for RTEMS (e.g., the m68k implementation), this
+version does NOT run at 'exception' level but is intended to
+be less intrusive. It's primary use is debugging of user-level
+/ application code rather than the kernel itself (kernel
+debugging is still possible to a certain extent but the stub
+essentially needs a functional and initialized system to
+operate).
+
+The stub runs as a 'daemon task' executing debugging commands
+as demanded by the host gdb. Unlike a 'low-level stub' which
+interrupts/stops the target system as a whole while talking
+to gdb, this implementation only affects the execution of
+one or multiple 'target threads' leaving other tasks alone.
+
+As a consequence, it is possible to use TCP/IP as a communication
+protocol (no breakpoints in networking must be set, though!).
+
+Multithreading
+- - - - - - - -
+Gdb semantics expect the target system to be 'interrupted' or
+'stopped' while listening to gdb commands. This implementation,
+OTOH, attempts to be as little intrusive as possible. For this
+purpose, a list of 'stopped' tasks is maintained internally.
+Tasks are interrupted only as a result of hitting a breakpoint,
+incurring an exception or an explicit request by the debugger.
+Interrupted tasks can be inspected as usual (stack frame,
+register contents etc.) and can be 'continued/resumed'.
+Only 'interrupted' tasks can be inspected - the others continue
+executing normally.
+The stub also creates a special helper task context which is
+always interrupted, hence it is possible to do non-task related
+work (inspect/change memory, disassemble, ...) without having
+to stop an application task.
+
+Cexp Support
+- - - - - - -
+A patch to 'gdb' is provided extending the remote protocol
+in order to support loadable modules. Gdb can inquire the
+list of currently loaded modules and their section addresses
+as well as load/unload additional modules on the fly.
+
+Supported Targets
+- - - - - - - - -
+While many parts of the stub are intended to be portable
+and target-independent, there are a few pieces of code
+which are BSP/CPU dependent. Currently, low-level support
+for the stub has been implemented for the i386/pc386 and
+powerpc/shared (and derived - should probably work on any
+'new-exception processing' ppc BSP) BSPs.
+
+Adding support for a new target should not be extremely
+hard. It mainly consists of writing two routines for
+packing/unpacking register values into a gdb-formatted
+array. Also, a low-level exception handler needs to be
+written (mostly for mapping exception codes to signal numbers).
+E.g., the i386/pc386 specific file consists of ~400 lines
+of quite straightforward code.
+
+Supported Connection Methods
+- - - - - - - - - - - - - - -
+One of the strengths of the gdb remote protocol is its simplicity
+which makes it possible to use many character-stream based
+I/O methods for exchanging messages.
+Currently, the stub uses TCP/IP but it should be straightforward
+to add support for serial port communications (serial port comm.
+w/o termios would make the debugger depend on far less system
+services [e.g., networking could then be debugged]). 
+Note, OTOH, that the simplicity of the gdb protocol is also
+one of its weaknesses as it makes it very slow.
+
+GDB Patches
+- - - - - -
+One important design goal was not having to patch gdb itself.
+Unfortunately, it was not completely possible to meet this
+goal. However, the necessary patches are believed to be
+as small and modular as possible.
+
+a) A small patch is needed to fix a bug [has been submitted
+   but to-date, I don't know if it has been merged] in the
+   powerpc stack unwinding.
+b) A small patch is needed to make it possible to obtain
+   the list of target tasks without interrupting them all
+   (which would result in violating design goal #1: only
+   interrupt tasks on request [explicit or breakpoint]).
+c) Additional patch adds a new gdb target with protocol
+   extentions to support loadable modules.
+
+BUILDING
+========
+
+Prerequisites:
+	host:   download and unpack gdb-6.2.1
+            patches distributed with rtems-gdb-stub
+    target:            libbspExt >= version 1.3
+            (optional) CEXP      >= version 1.5.beta
