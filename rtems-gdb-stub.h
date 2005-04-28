@@ -31,9 +31,12 @@ extern volatile rtems_id rtems_gdb_break_tid;
 
 void rtems_gdb_breakpoint();
 
-/* start debugger thread with priority 'pri' */
+/* start debugger thread with priority 'pri'
+ * If no ttyName is passed (ttyName==0) socket
+ * I/O is used
+ */
 int
-rtems_gdb_start(int pri);
+rtems_gdb_start(int pri, char *ttyName);
 
 /* stop debugger thread */
 int

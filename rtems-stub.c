@@ -5,6 +5,10 @@
 #include <rtems/error.h>
 #include <rtems/bspIo.h>
 
+#include <sys/termios.h>
+#include <sys/fcntl.h>
+#include <sys/ioctl.h>
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -35,6 +39,10 @@
 
 #define TID_ANY ((rtems_id)0)
 #define TID_ALL ((rtems_id)-1)
+
+#define DONT_BLOCK				0
+#define BLOCK_NON_INTERRUPTIBLE	1
+#define BLOCK_INTERRUPTIBLE		2
 
 static	FILE *rtems_gdb_strm = 0;
 
@@ -205,6 +213,31 @@ STATIC char remcomOutBuffer[BUFMAX];
 #  define hex2int hexToInt
 #  define getpacket(buf) getpacket()
 #else
+
+static int
+setup_term(int fd)
+{
+struct termios newa;
+	if ( !isatty(fd) ) {
+		fprintf(stderr,"File descriptor not a terminal\n");
+		return -1;
+	}
+	memset(&newa,0,sizeof(newa));
+    newa.c_iflag    = IXON | INPCK;
+    newa.c_oflag    = 0;
+    newa.c_cflag    = CS8 | CREAD |/* silently ignored!! PARENB |*/ CLOCAL;
+    newa.c_lflag    = 0;
+    newa.c_cc[VMIN] = 1;
+    if ( cfsetispeed(&newa, B115200) || cfsetospeed(&newa, B115200) ) {
+        perror("setting speed to 115k");
+        return -1;
+    }
+    if ( tcsetattr(fd, TCSANOW, &newa) ) {
+        perror("setting new attributes");
+        return -1;
+    }
+	return 0;
+}
 
 STATIC int
 hex(unsigned char ch)
@@ -430,7 +463,7 @@ RtemsDebugMsg msg;
 	/* detach all tasks */
 
 	/* collect all pending tasks */
-	while ( (msg=getFirstMsg(0)) )
+	while ( (msg=getFirstMsg(DONT_BLOCK)) )
 		;
 
 	/* and resume everything */
@@ -655,6 +688,7 @@ static void dolj(int signo)
 STATIC void
 rtems_gdb_daemon (rtems_task_argument arg)
 {
+  char				*ttyName = (char*)arg;
   char              *ptr, *pto;
   const char        *pfrom;
   char              *chrbuf = 0;
@@ -687,7 +721,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		goto cleanup;
 	}
 
-	{
+	if ( !ttyName ) {
     int                arg = 1;
     struct sockaddr_in srv; 
 
@@ -728,19 +762,30 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
 	/* synchronize with helper task */
 	if ( !theHelperMsg ) {
-		getFirstMsg(1);
+		getFirstMsg(BLOCK_NON_INTERRUPTIBLE); /* input stream not ready yet */
 		assert( theHelperMsg );
 	}
 	helper_frame_pc = rtems_gdb_tgt_get_pc( theHelperMsg );
 	current = task_switch_to(0, helper_tid);
 
-	{
-	struct sockaddr_in a;
-	int                a_s = sizeof(a);
-	if ( (sd = accept(rtems_gdb_sd, (struct sockaddr *)&a, &a_s)) < 0 ) {
-		perror("GDB daemon: accept");
-		goto cleanup;
-	}
+	if ( !ttyName ) {
+		struct sockaddr_in a;
+		int                a_s = sizeof(a);
+		if ( (sd = accept(rtems_gdb_sd, (struct sockaddr *)&a, &a_s)) < 0 ) {
+			perror("GDB daemon: accept");
+			goto cleanup;
+		}
+	} else {
+		/* serial I/O */
+		if ( (sd = open(ttyName, O_RDWR)) < 0 ) {
+			perror("GDB daemon: opening tty");
+			goto cleanup;
+		}
+		/* no need for saving attributes - defaults are restored on fd close */
+		if ( setup_term(sd) ) {
+			close(sd);
+			goto cleanup;
+		}
 	}
 
 	if ( !(rtems_gdb_strm = fdopen(sd, "r+")) ) {
@@ -748,6 +793,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		close(sd);
 		goto cleanup;
 	}
+	setlinebuf(rtems_gdb_strm);
 
 	cont_tid = 0;
 
@@ -1250,7 +1296,7 @@ void blah()
 #endif
 
 int
-rtems_gdb_start(int pri)
+rtems_gdb_start(int pri, char *ttyName)
 {
 unsigned ticks_per_sec;
 
@@ -1266,7 +1312,7 @@ unsigned ticks_per_sec;
 	wait_ticks  = ticks_per_sec * poll_ms;
 	wait_ticks /= 1000;
 
-	rtems_gdb_tid = rtems_gdb_thread_helper("GDBd", pri, 20000+RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, 0);
+	rtems_gdb_tid = rtems_gdb_thread_helper("GDBd", pri, 20000+RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, (rtems_task_argument)ttyName);
 #ifdef DEBUG_SECOND_THREAD
 	blah_tid = rtems_gdb_thread_helper("blah", 200, RTEMS_MINIMUM_STACK_SIZE, blah, 0);
 #endif
@@ -1574,14 +1620,15 @@ unsigned long		flags;
 int					nchars;
 rtems_status_code	sc;
 
-	if ( block ) {
-		while ( RTEMS_SUCCESSFUL != (sc = rtems_semaphore_obtain(gdb_pending_id, RTEMS_WAIT, wait_ticks)) ) {
+	if ( DONT_BLOCK != block ) {
+		unsigned t = BLOCK_INTERRUPTIBLE == block ? wait_ticks : RTEMS_NO_TIMEOUT;
+		while ( RTEMS_SUCCESSFUL != (sc = rtems_semaphore_obtain(gdb_pending_id, RTEMS_WAIT, t)) ) {
 			switch ( sc ) {
 				case RTEMS_TIMEOUT:
 					/* poll stream for activity */
 					nchars = 0;
 					/* TODO: what if the stream buffer holds chars? */
-					assert( 0 == ioctl(fileno(rtems_gdb_stream), FIONREAD, &nchars) );
+					assert( 0 == ioctl(fileno(rtems_gdb_strm), FIONREAD, &nchars) );
 					if ( nchars <= 0 )
 						break; /* continue waiting */
 					/* else fall thru */
@@ -1678,7 +1725,7 @@ RtemsDebugMsg msg;
 	 * current thread!
      */
 
-	msg = getFirstMsg( 0 == *pcurrent );
+	msg = getFirstMsg( 0 == *pcurrent ? BLOCK_INTERRUPTIBLE : DONT_BLOCK );
 
 	if ( !initialized ) {
 		printf("Daemon killed;\n");
