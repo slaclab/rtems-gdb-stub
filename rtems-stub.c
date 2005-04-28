@@ -36,7 +36,10 @@
 #define TID_ANY ((rtems_id)0)
 #define TID_ALL ((rtems_id)-1)
 
-static   FILE *rtems_gdb_strm = 0;
+static	FILE *rtems_gdb_strm = 0;
+
+static	unsigned wait_ticks  = 0; /* initialized to ms; multiplied by tick rate at init */
+static	unsigned poll_ms     = 500; /* initialized to ms; multiplied by tick rate at init */
 
 /* write a single character      */
 static inline void putDebugChar(int ch)
@@ -371,18 +374,6 @@ volatile rtems_id  rtems_gdb_break_tid = 0;
 STATIC RtemsDebugMsg	theHelperMsg = 0;
 STATIC unsigned long    helper_frame_pc;
 
-static volatile int      waiting = 0;
-
-static void sowake(struct socket *so, caddr_t arg)
-{
-rtems_status_code sc;
-
-	if ( waiting ) {
-		sc = rtems_semaphore_flush(gdb_pending_id);
-	}
-
-}
-
 static int resume_stopped_task(rtems_id tid, int sig)
 {
 RtemsDebugMsg m;
@@ -450,15 +441,11 @@ RtemsDebugMsg msg;
 
 static void cleanup_connection()
 {
-struct sockwakeup wkup = {0};
-
 	if ( rtems_remote_debug & DEBUG_SCHED )
 		printf("Releasing connection\n");
 
 	detach_all_tasks();
 
-	/* make sure the callback is removed */
-    setsockopt(fileno(rtems_gdb_strm), SOL_SOCKET, SO_RCVWAKEUP, &wkup, sizeof(wkup));
 	fclose( rtems_gdb_strm );
 	rtems_gdb_strm = 0;
 }
@@ -749,15 +736,11 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
 	{
 	struct sockaddr_in a;
-    struct sockwakeup  wkup;
 	int                a_s = sizeof(a);
 	if ( (sd = accept(rtems_gdb_sd, (struct sockaddr *)&a, &a_s)) < 0 ) {
 		perror("GDB daemon: accept");
 		goto cleanup;
 	}
-    wkup.sw_pfn = sowake;
-    wkup.sw_arg = (caddr_t)0;
-    setsockopt(sd, SOL_SOCKET, SO_RCVWAKEUP, &wkup, sizeof(wkup));
 	}
 
 	if ( !(rtems_gdb_strm = fdopen(sd, "r+")) ) {
@@ -1269,6 +1252,8 @@ void blah()
 int
 rtems_gdb_start(int pri)
 {
+unsigned ticks_per_sec;
+
 	if ( 0 == pri )
 		pri = 20;
 
@@ -1276,6 +1261,10 @@ rtems_gdb_start(int pri)
 #ifndef USE_GDB_REDZONE
 	init_stack();
 #endif
+
+    rtems_clock_get( RTEMS_CLOCK_GET_TICKS_PER_SECOND, &ticks_per_sec );
+	wait_ticks  = ticks_per_sec * poll_ms;
+	wait_ticks /= 1000;
 
 	rtems_gdb_tid = rtems_gdb_thread_helper("GDBd", pri, 20000+RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, 0);
 #ifdef DEBUG_SECOND_THREAD
@@ -1582,17 +1571,32 @@ static RtemsDebugMsg getFirstMsg(int block)
 {
 RtemsDebugMsg		msg;
 unsigned long		flags;
+int					nchars;
 rtems_status_code	sc;
 
 	if ( block ) {
-		sc = rtems_semaphore_obtain(gdb_pending_id, RTEMS_WAIT, RTEMS_NO_TIMEOUT);
-		if ( RTEMS_UNSATISFIED == sc ) {
-			/* someone interrupted us by flushing the semaphore */
-			return 0;
-		} else {
-			assert( RTEMS_SUCCESSFUL == sc );
-			SEMA_DEC();
+		while ( RTEMS_SUCCESSFUL != (sc = rtems_semaphore_obtain(gdb_pending_id, RTEMS_WAIT, wait_ticks)) ) {
+			switch ( sc ) {
+				case RTEMS_TIMEOUT:
+					/* poll stream for activity */
+					nchars = 0;
+					/* TODO: what if the stream buffer holds chars? */
+					assert( 0 == ioctl(fileno(rtems_gdb_stream), FIONREAD, &nchars) );
+					if ( nchars <= 0 )
+						break; /* continue waiting */
+					/* else fall thru */
+				case RTEMS_UNSATISFIED:
+					/* someone interrupted us by flushing the semaphore */
+					return 0;
+
+					break;
+
+				default:
+					assert( !"Unexpected semaphore obtain ret. value" );
+				break;
+			}
 		}
+		SEMA_DEC();
 	}
 
 	rtems_interrupt_disable(flags);
@@ -1674,13 +1678,7 @@ RtemsDebugMsg msg;
 	 * current thread!
      */
 
-	/* tiny chances for a race condition here -- if they hit the
-	 * button before we set the flag
-	 */
-
-	waiting = 1;
 	msg = getFirstMsg( 0 == *pcurrent );
-	waiting = 0;
 
 	if ( !initialized ) {
 		printf("Daemon killed;\n");
