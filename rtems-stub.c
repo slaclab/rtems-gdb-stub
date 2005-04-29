@@ -793,7 +793,10 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		close(sd);
 		goto cleanup;
 	}
+/*
+	not a good idea - this doesn't work
 	setlinebuf(rtems_gdb_strm);
+*/
 
 	cont_tid = 0;
 
@@ -1653,7 +1656,7 @@ rtems_status_code	sc;
 	if ( !msg )
 		return 0;
 
-	if ( !block ) {
+	if ( DONT_BLOCK == block ) {
 		assert( RTEMS_SUCCESSFUL == rtems_semaphore_obtain(
 										gdb_pending_id,
 										RTEMS_NO_WAIT,
