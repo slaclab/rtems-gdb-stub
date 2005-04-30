@@ -15,8 +15,10 @@ _cexpModuleFinalize(void *h)
 	return 0;
 }
 
+/*
 void
 _cexpModuleInitialize(void *h)
 {
  	rtems_gdb_start(40,0);
 }
+*/

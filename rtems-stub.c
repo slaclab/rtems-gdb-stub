@@ -29,6 +29,14 @@
 #include <cexpmodP.h>
 #endif
 
+/* Debugging definitions */
+#define STATIC
+
+
+#ifndef STATIC
+#define STATIC static
+#endif
+
 #if defined(__PPC__)
 #include "rtems-gdb-stub-ppc-shared.h"
 #elif defined(__i386__)
@@ -44,7 +52,7 @@
 #define BLOCK_NON_INTERRUPTIBLE	1
 #define BLOCK_INTERRUPTIBLE		2
 
-static	FILE *rtems_gdb_strm = 0;
+STATIC	FILE *rtems_gdb_strm = 0;
 
 static	unsigned wait_ticks  = 0; /* initialized to ms; multiplied by tick rate at init */
 static	unsigned poll_ms     = 500; /* initialized to ms; multiplied by tick rate at init */
@@ -82,9 +90,6 @@ post_and_suspend(RtemsDebugMsg msg);
 
 #define BUFMAX      400		/* size of communication buffer; depends on NUMREGBYTES  */
 #define EXTRABUFSZ	200     /* size of buffer for thread extra and other string info */
-
-/* Debugging definitions */
-#define STATIC
 
 /*  debug !=  0 prints ill-formed commands in valid packets & checksum errors */ 
 volatile int rtems_remote_debug = 0 /* | DEBUG_SCHED | DEBUG_SLIST | DEBUG_STACK */;
@@ -1202,8 +1207,17 @@ release_connection:
 cleanup:
   if ( gdb_pending_id )
 	rtems_semaphore_delete( gdb_pending_id );
-  if (helper_tid)
+  if (helper_tid) {
   	rtems_task_delete(helper_tid);
+	/* helper could have ran into the hard breakpoint again */
+	if ( (current = msgHeadDeQ(&stopped)) ) {
+		assert( current->tid == helper_tid );
+		if ( !current->frm )
+			msgFree(current);
+	}
+	assert( !msgHeadDeQ(&stopped) );
+	theHelperMsg = 0;
+  }
   if ( ehandler_installed ) {
 	rtems_gdb_tgt_install_ehandler(0);
   }
@@ -1302,6 +1316,11 @@ int
 rtems_gdb_start(int pri, char *ttyName)
 {
 unsigned ticks_per_sec;
+
+	if ( rtems_gdb_tid ) {
+		fprintf(stderr,"GDB daemon already running. Use 'rtems_gdb_stop()'\n");
+		return -1;
+	}
 
 	if ( 0 == pri )
 		pri = 20;
@@ -1628,6 +1647,8 @@ rtems_status_code	sc;
 		while ( RTEMS_SUCCESSFUL != (sc = rtems_semaphore_obtain(gdb_pending_id, RTEMS_WAIT, t)) ) {
 			switch ( sc ) {
 				case RTEMS_TIMEOUT:
+					if ( rtems_remote_debug & DEBUG_SCHED )
+						fprintf(stderr,"Polling for msgs or chars\n");
 					/* poll stream for activity */
 					nchars = 0;
 					/* TODO: what if the stream buffer holds chars? */
@@ -1680,7 +1701,13 @@ rtems_status_code	sc;
 	/* a thread that just got a signal cannot be on the
 	 * stopped list
 	 */
+if ( threadOnListBwd(&stopped, msg->tid )) {
+	CPU_print_stack();
+	rtems_task_wake_after(50);
+	printf("TID is 0x%08x\n",msg->tid);
+	rtems_task_wake_after(50);
 	assert( ! threadOnListBwd(&stopped, msg->tid) );
+}
 	/* it also must be a single node; not on any list */
 	assert( msg->node.p == &msg->node && msg->node.n == &msg->node );
 
