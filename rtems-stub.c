@@ -11,6 +11,7 @@
 
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 
 #include <stdio.h>
@@ -52,7 +53,7 @@
 #define BLOCK_NON_INTERRUPTIBLE	1
 #define BLOCK_INTERRUPTIBLE		2
 
-STATIC	FILE *rtems_gdb_strm = 0;
+STATIC	FILE * volatile rtems_gdb_strm = 0;
 
 static	unsigned wait_ticks  = 0; /* initialized to ms; multiplied by tick rate at init */
 static	unsigned poll_ms     = 500; /* initialized to ms; multiplied by tick rate at init */
@@ -62,6 +63,7 @@ static inline void putDebugChar(int ch)
 {
 	fputc(ch, rtems_gdb_strm);
 }
+
 /* read and return a single char */
 static inline int getDebugChar()
 {
@@ -228,11 +230,12 @@ struct termios newa;
 		return -1;
 	}
 	memset(&newa,0,sizeof(newa));
-    newa.c_iflag    = IXON | INPCK;
-    newa.c_oflag    = 0;
-    newa.c_cflag    = CS8 | CREAD |/* silently ignored!! PARENB |*/ CLOCAL;
-    newa.c_lflag    = 0;
-    newa.c_cc[VMIN] = 1;
+    newa.c_iflag     = IXON | INPCK;
+    newa.c_oflag     = 0;
+    newa.c_cflag     = CS8 | CREAD |/* silently ignored!! PARENB |*/ CLOCAL;
+    newa.c_lflag     = 0;
+    newa.c_cc[VMIN]  = 1;
+    newa.c_cc[VTIME] = 0;
     if ( cfsetispeed(&newa, B115200) || cfsetospeed(&newa, B115200) ) {
         perror("setting speed to 115k");
         return -1;
@@ -484,8 +487,10 @@ static void cleanup_connection()
 
 	detach_all_tasks();
 
-	fclose( rtems_gdb_strm );
-	rtems_gdb_strm = 0;
+	if ( rtems_gdb_strm ) {
+		fclose( rtems_gdb_strm );
+		rtems_gdb_strm = 0;
+	}
 }
 
 static int
@@ -707,7 +712,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
   CexpModule		mod   = 0;
   CexpSym           *psectsyms = 0;
 #endif
-  int				addr,len;
+  int				addr,len,sarg;
   /* startup / initialization */
   {
     if ( RTEMS_SUCCESSFUL !=
@@ -727,7 +732,6 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	}
 
 	if ( !ttyName ) {
-    int                arg = 1;
     struct sockaddr_in srv; 
 
       /* create socket */
@@ -737,14 +741,15 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		goto cleanup;
 	  }
 
-      setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_KEEPALIVE, &arg, sizeof(arg));
-      setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_REUSEADDR, &arg, sizeof(arg));
+	  sarg = 1;
+      setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_KEEPALIVE, &sarg, sizeof(sarg));
+      setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_REUSEADDR, &sarg, sizeof(sarg));
 
       memset(&srv, 0, sizeof(srv));
       srv.sin_family = AF_INET;
       srv.sin_port   = htons(RTEMS_GDB_PORT);
-      arg            = sizeof(srv);
-      if ( bind(rtems_gdb_sd,(struct sockaddr *)&srv,arg)<0 ) {
+      sarg           = sizeof(srv);
+      if ( bind(rtems_gdb_sd,(struct sockaddr *)&srv,sarg)<0 ) {
         perror("GDB daemon: bind");
 		goto cleanup;
       };
@@ -763,6 +768,8 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
   initialized = 1;
 
+  fprintf(stderr,"GDB daemon: starting up\n");
+
   while (initialized) {
 
 	/* synchronize with helper task */
@@ -778,6 +785,11 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		int                a_s = sizeof(a);
 		if ( (sd = accept(rtems_gdb_sd, (struct sockaddr *)&a, &a_s)) < 0 ) {
 			perror("GDB daemon: accept");
+			goto cleanup;
+		}
+		sarg = 1;
+      	if ( setsockopt(sd, IPPROTO_TCP, TCP_NODELAY, &sarg, sizeof(sarg)) ) {
+			perror("setsockopt TCP_NODELAY");
 			goto cleanup;
 		}
 	} else {
@@ -832,6 +844,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		/* Detach */
 	case 'D':
       strcpy(remcomOutBuffer,"OK");
+	  putpacket(remcomOutBuffer);
 	  goto release_connection;
 
 	case 'g':		/* read registers */
@@ -1205,6 +1218,8 @@ release_connection:
 
 /* shutdown */
 cleanup:
+  fprintf(stderr,"GDB daemon: shutting down\n");
+
   if ( gdb_pending_id )
 	rtems_semaphore_delete( gdb_pending_id );
   if (helper_tid) {
@@ -1228,6 +1243,7 @@ cleanup:
   if ( 0 <= rtems_gdb_sd ) {
     close(rtems_gdb_sd);
   }
+  rtems_gdb_sd = -1;
   free( chrbuf );
   free( tid_tab );
   while ( (current = msgHeadDeQ(&freeList)) )
@@ -1342,9 +1358,24 @@ unsigned ticks_per_sec;
 }
 
 int
-rtems_gdb_stop()
+rtems_gdb_stop(int silence)
 {
 int  sd;
+FILE *f;
+
+	if ( !rtems_gdb_tid ) {
+		fprintf(stderr,"Currently no gdb daemon is running\n");
+		return -1;
+	}
+
+	if ( !silence ) {
+		fprintf(stderr,"Stopping the daemon is not thread safe and is\n");
+		fprintf(stderr,"mainly supported for occasional use and debugging.\n");
+		fprintf(stderr,"Make sure the daemon is idle (blocking/waiting for\n");
+		fprintf(stderr,"a new connection [use gdb 'detach' cmd]) and call\n");
+		fprintf(stderr,"again with a nonzero argument to override this warning.\n");
+		return -1;
+	}
 
 #ifdef DEBUG_SECOND_THREAD
 	if ( blah_tid )
@@ -1354,6 +1385,18 @@ int  sd;
 	/* enqueue a special message */
 	initialized = 0;
 	rtems_semaphore_flush( gdb_pending_id );
+
+	/* close the stream -- this causes a blocking getDebugChar()
+	 * to abort but it is not really thread safe.
+	 * We don't want to add the overhead of properly mutexing
+	 * the stream - the stop/start feature is not meant for
+	 * regular, frequent use but mostly for debugging.
+	 * Should be safe to use while the daemon is blocking for
+	 * events or I/O on the stream.
+	 */
+	f = rtems_gdb_strm;
+	rtems_gdb_strm = 0;
+	fclose(f);
 
 	sd = rtems_gdb_sd;
 	rtems_gdb_sd = -1;
@@ -1649,12 +1692,15 @@ rtems_status_code	sc;
 				case RTEMS_TIMEOUT:
 					if ( rtems_remote_debug & DEBUG_SCHED )
 						fprintf(stderr,"Polling for msgs or chars\n");
-					/* poll stream for activity */
-					nchars = 0;
-					/* TODO: what if the stream buffer holds chars? */
-					assert( 0 == ioctl(fileno(rtems_gdb_strm), FIONREAD, &nchars) );
-					if ( nchars <= 0 )
-						break; /* continue waiting */
+					if ( rtems_gdb_strm ) {
+						/* poll stream for activity */
+						nchars = 0;
+						/* TODO: what if the stream buffer holds chars? */
+						assert( 0 == ioctl(fileno(rtems_gdb_strm), FIONREAD, &nchars) );
+						if ( nchars <= 0 )
+							break; /* continue waiting */
+					}
+
 					/* else fall thru */
 				case RTEMS_UNSATISFIED:
 					/* someone interrupted us by flushing the semaphore */
@@ -1701,13 +1747,8 @@ rtems_status_code	sc;
 	/* a thread that just got a signal cannot be on the
 	 * stopped list
 	 */
-if ( threadOnListBwd(&stopped, msg->tid )) {
-	CPU_print_stack();
-	rtems_task_wake_after(50);
-	printf("TID is 0x%08x\n",msg->tid);
-	rtems_task_wake_after(50);
 	assert( ! threadOnListBwd(&stopped, msg->tid) );
-}
+
 	/* it also must be a single node; not on any list */
 	assert( msg->node.p == &msg->node && msg->node.n == &msg->node );
 
@@ -1778,7 +1819,10 @@ RtemsDebugMsg msg;
 			if ( rtems_remote_debug & DEBUG_COMM )
 				printf("net event\n");
 			/* should be '\003' */
-			getDebugChar();
+			if ( getDebugChar() < 0 ) {
+				/* aborted / deamon stopped */
+				return -1;
+			}
 #if 0
 			/* stop the current thread */
 #else
