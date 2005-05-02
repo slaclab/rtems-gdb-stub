@@ -38,8 +38,10 @@ void rtems_gdb_breakpoint();
 int
 rtems_gdb_start(int pri, char *ttyName);
 
-/* stop debugger thread */
+/* stop debugger thread; use nonzero arg to override
+ * thread safety warning / reject to perform the operation
+ */
 int
-rtems_gdb_stop();
+rtems_gdb_stop(int override);
 
 #endif
