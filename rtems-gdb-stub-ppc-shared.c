@@ -475,7 +475,7 @@ int faul()
 Frame sp;
 unsigned long lr;
 	asm volatile("mr %0, 1; mflr %1":"=r"(sp),"=r"(lr));
-	printf("LR 0x%08x; SP 0x%08x; *SP 0x%08x; **SP 0x%08x\n",
+	printf("LR 0x%08lx; SP %p; *SP %p; **SP %p\n",
 		lr, sp, sp->up, sp->up->up);
 	return (int)sp;
 }
