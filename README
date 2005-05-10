@@ -76,19 +76,17 @@ Supported Connection Methods
 One of the strengths of the gdb remote protocol is its simplicity
 which makes it possible to use many character-stream based
 I/O methods for exchanging messages.
-Currently, the stub uses TCP/IP but it should be straightforward
-to add support for serial port communications (serial port comm.
-w/o termios would make the debugger depend on far less system
-services [e.g., networking could then be debugged]). 
+Currently, the stub supports TCP/IP and serial port communication
+via RTEMS' termios driver.
 Note, OTOH, that the simplicity of the gdb protocol is also
-one of its weaknesses as it makes it very slow.
+one of its weaknesses as it makes it quite slow.
 
 GDB Patches
 - - - - - -
 One important design goal was not having to patch gdb itself.
 Unfortunately, it was not completely possible to meet this
 goal. However, the necessary patches are believed to be
-as small and modular as possible.
+as small and as modular as possible.
 
 a) A small patch is needed to fix a bug [has been submitted
    but to-date, I don't know if it has been merged] in the
@@ -98,7 +96,7 @@ b) A small patch is needed to make it possible to obtain
    (which would result in violating design goal #1: only
    interrupt tasks on request [explicit or breakpoint]).
 c) Additional patch adds a new gdb target with protocol
-   extentions to support loadable modules.
+   extentions to support loadable modules (CEXP).
 
 BUILDING
 ========
@@ -108,3 +106,179 @@ Prerequisites:
             patches distributed with rtems-gdb-stub
     target:            libbspExt >= version 1.3
             (optional) CEXP      >= version 1.5.beta
+
+<<TODO>>
+TO-BE-COMPLETED
+<</TODO>>
+
+
+DEBUGGING SESSION
+=================
+
+Prerequisites:
+-------------
+Compilation
+	code to be debugged must be compiled with the '-g' option.
+    (preferrably everything).
+	Optimization Caveat: It is possible to use GDB with optimized
+	code (I do it all the time) but this may change the flow
+	of execution, subroutine calls (inlining) and may cause
+	variables to 'disappear' etc.
+
+Front-end
+	You want to use a GUI frontend together with cross-gdb, e.g.,
+		ddd --debugger cross-gdb
+	NOTE: you need to set PATH prior to starting ddd/gdb, see below.
+
+RTMF
+	GDB is a quite powerful program -- make sure you know how to
+	use it! The 'rtems-remote' target only adds 1 new command.
+	Everything else is off-the shelf GDB.
+	Note that not all available commands necessarily make sense
+	on this specific target.
+
+Path settings
+    cross-debugging involves both, a host computer and the
+    target system executing the actual code. The host computer
+    needs access to *the same version* of the object files
+	that the target computer is executing.
+	Upon connection to the target, the host computer obtains
+	a list of currently loaded object files from the target.
+	In order for the host GDB being able to locate the necessary
+	object files, the PATH environment variable must point to
+	the directories containing these objects. Note that GDB
+	doesn't define a dedicated path variable for 'cross-architecture
+	objects' but requires the user to set the ordinary PATH
+	that is also searched for host executables!
+	Note that PATH is an environment variable and cannot be
+	changed from within a GDB session (GDB's 'environ' command
+	only affects the PATH as seen by a native debuggee and
+	doesn't have any effect in a cross-gdb session).
+
+	GDB also features a 'load' command to instruct the target
+	computer to load/link object modules. Since the target
+	computer usually sees directory tree that is different
+	from the host, any path information is discarded from the
+	'load' argument -- instead, the target's PATH environment
+	variable must contain the directory where the target can
+	locate the object that is to be loaded.
+
+Starting the debugging agent
+	On the target, the debugging agent must be running.
+	It needs to be linked into the system and is started
+	by calling
+		rtems_gdb_start(int agent_priority, char *serial_name)
+	Passing a priority of 0 lets the daemon pick its default
+	scheduling priority. The second argument defines the
+	connection method to be used. A NULL pointer lets the
+	daemon listen on TCP port 4444 for an incoming connection,
+	if a string is passed, it must be the path to a serial
+	device, e.g., "/dev/ttyS1".
+
+	The agent can be stopped (rtems_gdb_stop()) and restarted
+	with a different priority and/or communication method.
+
+
+Connecting to the Target
+------------------------
+	gdb can use either serial-port or TCP connections. Note
+	that either uses certain resources on the target (e.g.,
+	the termios driver or the TCP/IP stack, respectively)
+	and a debugging session may deadlock the system if
+	the debugging agent needs a resource that is locked
+	when the debuggee runs into a breakpoint.
+
+	The syntax for connecting to a target is (TCP)
+		(gdb) target rtems-remote <target>:4444
+	or
+		(gdb) target rtems-remote <com_port_on_host>
+	(serial) -- note that the agent's serial port runs at
+	115200 8N1 -- use GDB's 'remote baud' command.
+
+	Note that 'rtems-remote' is an extension of the
+	standard GDB 'remote' target -- it adds support
+	for CEXP modules (names, section addresses etc.).
+
+	Once connected to the target, the debugger is
+	attached to a dummy thread context. All user and
+	system threads are executing normally at this point.
+
+	Use the 'detach' command to close the connection
+	to the target at any time. All stopped threads will
+	be resumed.
+
+Switching thread context
+------------------------
+	In order to inspect a thread's stack, registers etc.
+	it must be stopped.
+	A thread is stopped either because it runs into a
+	breakpoint or if the debugger is explicitely
+	attached to it ('t' command). If you want to attach
+	to a specific thread you need to know its 'id'
+	(i.e., GDB's id which is orthogonal to the RTEMS task id
+	-- use 'info threads' to obtain a task list).
+
+	Once stopped, a thread remains suspended until you
+	issue the 'continue' command or 'detach' (terminate
+	the session). At this point, all threads are resumed.
+
+	You can hit <Ctrl>-C to interrupt the target; this
+	only interrupts the 'dummy'/'helper' thread and
+	attaches GDB to it.
+
+	I.e., 
+		target rtems-remote xxx:4444	// connect, attach to 'helper'
+	At this point, the helper is stopped - you can inspect its
+	registers etc. everyone else continues normally
+		info threads
+		t  14            // switch to thread ID 14
+	Thread 14 is stopped. The helper remains stopped. Inspect
+	T14's registers + stack
+		t 12             // switch to thread ID 12
+	helper, T14 and T12 are stopped; inspect T12's registers + stack
+		cont            // resume everything
+	helper, T14 and T12 are resumed
+		<Ctrl>-C		// interrupt
+	interrupt, stop helper and attach to it - same state as
+	after connection was established.
+
+RTEMS Specific Commands
+-----------------------
+	- use 'rtems load'          instead of 'load'
+	- use 'target rtems-remote' instead of 'remote'
+	- 'rtems sync-objs' -- (re)-synchronize gdb's file/section data
+	  with what's current on the target. Use this command if you
+	  added, removed or re-loaded modules from the Cexp> prompt
+	  instead of using 'rtems load' from inside GDB.
+	- 'info threads': semantics have slightly changed. Only a list
+	  of thread IDs/names is retrieved but not their stack frame
+	  or IP address (impossible without stopping all threads).
+
+<<TODO>>
+	More details; more commands; more implementation specifica
+<</TODO>>
+	
+
+EXAMPLE SESSION:
+================
+	Assume you compiled a module in your home directory
+		cross-gcc -g -c blah.c -o /home/john/blah.o
+    You copy the object to a TFTP server where it can be
+	'seen' by the target.
+		cp blah.o /tftpboot
+	Prior to starting a debugging session, the PATH on the
+	host is set up:
+		setenv PATH $PATH":/home/john"
+	On the target, (e.g., via startup script or from the Cexp>
+	prompt) the PATH is also setup:
+		Cexp> setenv("PATH","/TFTP/BOOTP_HOST/:<more dirs>:")
+	Start a GDB session on the host
+		cross-gdb
+	Connect to the target
+		(gdb) target rtems-remote <target>:4444
+		<gdb obtains object file list and searches PATH for 'blah.o'>
+	Recompile 'blah.c'
+		cross-gcc -g -c blah.c -o /home/john/blah.o
+		cp blah.o /tftpboot
+	Reload module from GDB prompt
+		(gdb) rtems load blah.o
