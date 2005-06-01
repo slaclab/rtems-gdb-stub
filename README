@@ -79,7 +79,7 @@ I/O methods for exchanging messages.
 Currently, the stub supports TCP/IP and serial port communication
 via RTEMS' termios driver.
 Note, OTOH, that the simplicity of the gdb protocol is also
-one of its weaknesses as it makes it quite slow.
+one of its weaknesses as it makes it a bit slow.
 
 GDB Patches
 - - - - - -
@@ -132,7 +132,7 @@ Front-end
 
 RTMF
 	GDB is a quite powerful program -- make sure you know how to
-	use it! The 'rtems-remote' target only adds 1 new command.
+	use it! The 'rtems-remote' target only adds 2 new commands.
 	Everything else is off-the shelf GDB.
 	Note that not all available commands necessarily make sense
 	on this specific target.
@@ -151,9 +151,9 @@ Path settings
 	objects' but requires the user to set the ordinary PATH
 	that is also searched for host executables!
 	Note that PATH is an environment variable and cannot be
-	changed from within a GDB session (GDB's 'environ' command
-	only affects the PATH as seen by a native debuggee and
-	doesn't have any effect in a cross-gdb session).
+	changed from within a GDB session (GDB's 'environ' ans 'path'
+	commands only affect the PATH as seen by a native debuggee
+	and don't have any effect in a cross-gdb session).
 
 	GDB also features a 'load' command to instruct the target
 	computer to load/link object modules. Since the target
@@ -177,6 +177,10 @@ Starting the debugging agent
 
 	The agent can be stopped (rtems_gdb_stop()) and restarted
 	with a different priority and/or communication method.
+
+	NOTE: rtems 4.6.2 requires a patch for this to work safely
+	      since the operation involves one task closing a socket
+		  on which another task is blocking.
 
 
 Connecting to the Target
@@ -271,7 +275,7 @@ EXAMPLE SESSION:
 		setenv PATH $PATH":/home/john"
 	On the target, (e.g., via startup script or from the Cexp>
 	prompt) the PATH is also setup:
-		Cexp> setenv("PATH","/TFTP/BOOTP_HOST/:<more dirs>:")
+		Cexp> setenv("PATH","/TFTP/BOOTP_HOST/:<more dirs>:",1)
 	Start a GDB session on the host
 		cross-gdb
 	Connect to the target

@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <ctype.h>
+#include <signal.h>
 
 #ifdef HAVE_CEXP
 #include <cexp.h>
@@ -166,6 +167,56 @@ static CdllNodeRec cemetery = { &cemetery, &cemetery };
 
 /* repository of free nodes */
 static CdllNodeRec freeList = { &freeList, &freeList };
+
+/* map signal numbers to names */
+static char *sig2name(int sig)
+{
+#ifdef SIGTRAP
+	if ( SIGTRAP == sig )
+		return "TRAP";
+#endif
+#ifdef SIGCHLD
+	if ( SIGCHLD == sig )
+		return "CHLD";
+#endif
+#ifdef SIGINT
+	if ( SIGINT == sig )
+		return "INT";
+#endif
+#ifdef SIGHUP
+	if ( SIGHUP == sig )
+		return "HUP";
+#endif
+#ifdef SIGILL
+	if ( SIGILL == sig )
+		return "ILL";
+#endif
+#ifdef SIGFPE
+	if ( SIGFPE == sig )
+		return "FPE";
+#endif
+#ifdef SIGSEGV
+	if ( SIGSEGV == sig )
+		return "SEGV";
+#endif
+#ifdef SIGBUS
+	if ( SIGBUS == sig )
+		return "BUS";
+#endif
+#ifdef SIGALRM
+	if ( SIGALRM == sig )
+		return "ALRM";
+#endif
+#ifdef SIGCONT
+	if ( SIGCONT == sig )
+		return "CONT;
+#endif
+#ifdef SIGSTOP
+	if ( SIGSTOP == sig )
+		return "STOP";
+#endif
+	return 0;
+}
 
 static RtemsDebugMsg
 threadOnListBwd(CdllNode list, rtems_id tid)
@@ -637,7 +688,19 @@ int               pri   = 0, i = 0;
 				state &= ~STATES_DORMANT;
 			}
 			if ( STATES_SUSPENDED & state && i < EXTRABUFSZ ) {
-				i+=sprintf(extrabuf+i," susp");
+				RtemsDbgMsg m;
+				if ( (   (m=threadOnListBwd(&cemetery, tid))
+				      || (m=threadOnListBwd(&stopped,tid))
+					  || (m=threadOnListBwd(&anchor,tid)) ) ) {
+					char *signm = sig2name(m->sig);
+					i+=sprintf(extrabuf+i," killed - SIG");
+					if ( signm )
+						i+=sprintf(extrabuf+i,"%s",signm);
+					else
+						i+=sprintf(extrabuf+i," %i",m->sig);
+				} else {
+					i+=sprintf(extrabuf+i," susp");
+				}
 				state &= ~STATES_SUSPENDED;
 			}
 			if ( STATES_TRANSIENT & state && i < EXTRABUFSZ ) {

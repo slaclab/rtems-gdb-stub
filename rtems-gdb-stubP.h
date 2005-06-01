@@ -109,4 +109,11 @@ int rtems_gdb_notify_and_suspend(RtemsDebugMsg);
 Thread_Control *
 rtems_gdb_get_tcb_dispatch_off(rtems_id tid);
 
+/* is this a crashed thread ? */
+static inline int
+rtems_gdb_thread_is_dead(RtemsDgbMsg m)
+{
+	return m->frm && SIGINT != m->sig && SIGTRAP != m->sig && SIGCHILD != m->sig;
+}
+
 #endif
