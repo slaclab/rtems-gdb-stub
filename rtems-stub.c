@@ -209,7 +209,7 @@ static char *sig2name(int sig)
 #endif
 #ifdef SIGCONT
 	if ( SIGCONT == sig )
-		return "CONT;
+		return "CONT";
 #endif
 #ifdef SIGSTOP
 	if ( SIGSTOP == sig )
@@ -688,12 +688,15 @@ int               pri   = 0, i = 0;
 				state &= ~STATES_DORMANT;
 			}
 			if ( STATES_SUSPENDED & state && i < EXTRABUFSZ ) {
-				RtemsDbgMsg m;
+				RtemsDebugMsg m;
 				if ( (   (m=threadOnListBwd(&cemetery, tid))
 				      || (m=threadOnListBwd(&stopped,tid))
 					  || (m=threadOnListBwd(&anchor,tid)) ) ) {
 					char *signm = sig2name(m->sig);
-					i+=sprintf(extrabuf+i," killed - SIG");
+					if ( rtems_gdb_thread_is_dead(m) )
+						i+=sprintf(extrabuf+i," killed  - SIG");
+					else
+						i+=sprintf(extrabuf+i," stopped - SIG");
 					if ( signm )
 						i+=sprintf(extrabuf+i,"%s",signm);
 					else
@@ -1699,6 +1702,17 @@ int rtems_gdb_notify_and_suspend(RtemsDebugMsg msg)
 
 	if ( rtems_remote_debug & DEBUG_STACK )
 		printk("NOTIFY with sig %i\n",msg->sig);
+
+	if ( rtems_gdb_thread_is_dead(msg) ) {
+		/* TODO: should have a dedicated logging task for I/O from exception/ISR context */
+		char *snm = sig2name(msg->sig);
+		printk("GDB agent: Exception (SIG");
+		if (snm)
+			printk(snm);
+		else
+			printk(" %i",msg->sig);
+		printk(") caught; Task 0x%08x killed (suspended) -- use GDB\n", msg->tid);
+	}
 
 	/* arch dep. code sends us SIGCHLD for a breakpoint
 	 * and SIGTRAP for single-step. We need to distinguish

@@ -7,6 +7,7 @@
 #include "cdll.h"
 
 #include "rtems-gdb-stub.h"
+#include <signal.h>
 
 /* TARGET ARCHITECTURE SPECIFIC ROUTINES; TO BE SUPPLIED BY
  * rtems-gdb-stub-xxxcpuxxx.c
@@ -111,9 +112,9 @@ rtems_gdb_get_tcb_dispatch_off(rtems_id tid);
 
 /* is this a crashed thread ? */
 static inline int
-rtems_gdb_thread_is_dead(RtemsDgbMsg m)
+rtems_gdb_thread_is_dead(RtemsDebugMsg m)
 {
-	return m->frm && SIGINT != m->sig && SIGTRAP != m->sig && SIGCHILD != m->sig;
+	return m->frm && SIGINT != m->sig && SIGTRAP != m->sig && SIGCHLD != m->sig;
 }
 
 #endif
