@@ -81,7 +81,7 @@ LDFLAGS   +=
 #  'make clobber' already includes 'make clean'
 #
 
-CLEAN_ADDITIONS += 
+CLEAN_ADDITIONS += *.pdf *.out *.toc *.aux *.log
 CLOBBER_ADDITIONS +=
 
 all:	${ARCH} $(SRCS) $(PGMS) $(LIB)
@@ -129,5 +129,19 @@ ${RTEMS_SITE_INSTALLDIR}/$(RTEMS_BSP)/bin :
 #  - Some BSPs might generate bootable executables in yet another
 #    format (such as .srec) and you might need to extend the rule
 #    below so the essential files get installed. YMMV.
-install:  all $(RTEMS_SITE_INSTALLDIR)/bin
+install:  all $(RTEMS_SITE_INSTALLDIR)/bin docinst
 	$(INSTALL_VARIANT) -m 555 ${PGMS} ${PGMS:%.exe=%.bin} ${PGMS:%.exe=%.sym} ${RTEMS_SITE_INSTALLDIR}/bin
+
+docinst: $(RTEMS_SITE_DOCDIR)/gdb/rtems-gdb-stub.pdf $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub/index.html
+
+%.pdf: %.tex
+	pdflatex $^	
+	pdflatex $^	
+
+$(RTEMS_SITE_DOCDIR)/gdb/rtems-gdb-stub.pdf: rtems-gdb-stub.pdf
+	@mkdir -p $(RTEMS_SITE_DOCDIR)/gdb
+	$(INSTALL_CHANGE) $^ $@
+
+$(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub/index.html: rtems-gdb-stub.tex
+	@mkdir -p $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub
+	latex2html -dir $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub rtems-gdb-stub

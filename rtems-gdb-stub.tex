@@ -1,71 +1,87 @@
-$Id$
+%$Id$
+\documentclass{article}
+\usepackage{bookman}
+\usepackage{html}
 
-*************************************************
-THIS IS STILL ALPHA / EXPERIMENTAL CODE
-*************************************************
+\newcommand{\cmd}[1]{{\tt #1}}
 
-RTEMS-GDB-STUB
+\newcommand{\nix}{}
 
-Till Straumann <strauman|at|slac.stanford.edu>
-3/14/2005
+\begin{htmlonly}
+\renewcommand{\nix}{
+	\htmladdnormallink{PDF version of this document}
+		{../../gdb/rtems-gdb-stub.pdf}
+}
+\end{htmlonly}
 
-INTRODUCTION/FEATURES
-=====================
+%*************************************************
+%THIS IS STILL ALPHA / EXPERIMENTAL CODE
+%*************************************************
 
-Architecture
-- - - - - - -
+\title{GDB Agent for RTEMS}
+
+\author{Till Straumann $<$strauman$|$at$|$slac.stanford.edu$>$}
+\date{3/14/2005; last modified 6/2/3005\\
+\nix
+}
+
+\begin{document}
+\maketitle
+\tableofcontents
+
+\section{Introduction and Features}
+
+\subsection{Architecture}
 
 This gdb stub is an implementation of the remote end of the
-GDB 'remote' protocol for a RTEMS target. Unlike other stubs
+GDB {\em remote protocol} for a RTEMS target. Unlike other stubs
 available for RTEMS (e.g., the m68k implementation), this
-version does NOT run at 'exception' level but is intended to
+version does NOT run at `exception' level but is intended to
 be less intrusive. It's primary use is debugging of user-level
 / application code rather than the kernel itself (kernel
 debugging is still possible to a certain extent but the stub
 essentially needs a functional and initialized system to
 operate).
 
-The stub runs as a 'daemon task' executing debugging commands
-as demanded by the host gdb. Unlike a 'low-level stub' which
+The stub runs as a `daemon task' executing debugging commands
+as demanded by the host gdb. Unlike a `low-level stub' which
 interrupts/stops the target system as a whole while talking
 to gdb, this implementation only affects the execution of
-one or multiple 'target threads' leaving other tasks alone.
+one or multiple `target threads' leaving other tasks alone.
 
 As a consequence, it is possible to use TCP/IP as a communication
 protocol (no breakpoints in networking must be set, though!).
 
-Multithreading
-- - - - - - - -
-Gdb semantics expect the target system to be 'interrupted' or
-'stopped' while listening to gdb commands. This implementation,
+\subsection{Multithreading}
+Gdb semantics expect the target system to be `interrupted' or
+`stopped' while listening to gdb commands. This implementation,
 OTOH, attempts to be as little intrusive as possible. For this
-purpose, a list of 'stopped' tasks is maintained internally.
+purpose, a list of `stopped' tasks is maintained internally.
 Tasks are interrupted only as a result of hitting a breakpoint,
 incurring an exception or an explicit request by the debugger.
 Interrupted tasks can be inspected as usual (stack frame,
-register contents etc.) and can be 'continued/resumed'.
-Only 'interrupted' tasks can be inspected - the others continue
+register contents etc.) and can be `continued/resumed'.
+Only `interrupted' tasks can be inspected - the others continue
 executing normally.
+
 The stub also creates a special helper task context which is
 always interrupted, hence it is possible to do non-task related
 work (inspect/change memory, disassemble, ...) without having
 to stop an application task.
 
-Cexp Support
-- - - - - - -
-A patch to 'gdb' is provided extending the remote protocol
+\subsection{Cexp Support}
+A patch to `gdb' is provided extending the remote protocol
 in order to support loadable modules. Gdb can inquire the
 list of currently loaded modules and their section addresses
 as well as load/unload additional modules on the fly.
 
-Supported Targets
-- - - - - - - - -
+\subsection{Supported Targets}
 While many parts of the stub are intended to be portable
-and target-independent, there are a few pieces of code
+and target-architecture independent, there are a few pieces of code
 which are BSP/CPU dependent. Currently, low-level support
-for the stub has been implemented for the i386/pc386 and
+has been implemented for the i386/pc386 and
 powerpc/shared (and derived - should probably work on any
-'new-exception processing' ppc BSP) BSPs.
+`new-exception processing' ppc BSP) BSPs.
 
 Adding support for a new target should not be extremely
 hard. It mainly consists of writing two routines for
@@ -75,120 +91,156 @@ written (mostly for mapping exception codes to signal numbers).
 E.g., the i386/pc386 specific file consists of ~400 lines
 of quite straightforward code.
 
-Supported Connection Methods
-- - - - - - - - - - - - - - -
+\subsection{Supported Connection Methods}
 One of the strengths of the gdb remote protocol is its simplicity
 which makes it possible to use many character-stream based
 I/O methods for exchanging messages.
 Currently, the stub supports TCP/IP and serial port communication
 via RTEMS' termios driver.
-Note, OTOH, that the simplicity of the gdb protocol is also
-one of its weaknesses as it makes it a bit slow.
 
-GDB Patches
-- - - - - -
+\subsection{GDB Patches}
 One important design goal was not having to patch gdb itself.
 Unfortunately, it was not completely possible to meet this
 goal. However, the necessary patches are believed to be
 as small and as modular as possible.
 
-a) A small patch is needed to fix a bug [has been submitted
-   but to-date, I don't know if it has been merged] in the
-   powerpc stack unwinding.
-b) A small patch is needed to make it possible to obtain
-   the list of target tasks without interrupting them all
-   (which would result in violating design goal #1: only
-   interrupt tasks on request [explicit or breakpoint]).
-c) Additional patch adds a new gdb target with protocol
-   extentions to support loadable modules (CEXP).
+\begin{itemize}
+\item
+ A small patch is needed to fix a bug [has been submitted
+ but to-date, I don't know if it has been merged] in the
+ powerpc stack unwinding.
+\item
+ A small patch is needed to make it possible to obtain
+ the list of target tasks without interrupting them all
+ (which would result in violating design goal \#1: only
+ interrupt tasks on request [explicit or breakpoint]).
+\item
+ Additional patch adds a new gdb target with protocol
+ extentions to support loadable modules (CEXP).
+\end{itemize}
 
-BUILDING
-========
+\section{Building}
+For the prerequisites consult table~\ref{tbl:prereq}
+\begin{table}
+\begin{center}
+\begin{tabular}{ll}
+host: & download and unpack gdb-6.2.1\\
+      & patches distributed with rtems-gdb-stub\\
+      & {\em SLAC Alternative: check out from SSRL CVS Repository}\\
+target: & (optional) libbspExt $>=$ version 1.3\\
+        & (optional) CEXP $>=$ version 1.5.beta
+\end{tabular}
+\caption{Prerequisites}
+\label{tbl:prereq}
+\end{center}
+\end{table}
 
-Prerequisites:
-	host:   download and unpack gdb-6.2.1
-            patches distributed with rtems-gdb-stub
-    target:            libbspExt >= version 1.3
-            (optional) CEXP      >= version 1.5.beta
+\begin{itemize}
+\item
+  Change directory to gdb source topdir, create a build
+  subdirectory (name of your choice), chdir there and configure:
+\begin{verbatim}
+>  mkdir build
+>  cd build
+>  ../configure --target=powerpc-ssrl-rtems  
+\end{verbatim}
 
-<<TODO>>
-TO-BE-COMPLETED
-<</TODO>>
+  Compile by typing {\tt make} (gnumake) and install manually:
+\begin{verbatim}
+>  make
+>  install -s gdb/gdb <target-dir>/powerpc-rtems-gdb
+\end{verbatim}
 
+  If you want to install everything including documentation you
+  might need more elaborate {\tt configure} options to get the
+  install locations and the executable name right.
+  
+\item
+  The target agent is part of the {\tt ssrlApps} package and
+  should be build automatically as part of that package.
+  If you don't want to use libbspExt (on powerpc) or Cexp
+  you have to remove the respective {\tt DEFINES} in the
+  {\tt Makefile}.
+\end{itemize}
 
-DEBUGGING SESSION
-=================
+\section{Debugging Session}
 
-Prerequisites:
--------------
-Compilation
-	code to be debugged must be compiled with the '-g' option.
+\subsection{Prerequisites}
+\subsubsection*{Compilation}
+	Code to be debugged must be compiled with the `-g' option.
     (preferrably everything).
+
 	Optimization Caveat: It is possible to use GDB with optimized
 	code (I do it all the time) but this may change the flow
 	of execution, subroutine calls (inlining) and may cause
-	variables to 'disappear' etc.
+	variables to `disappear' etc.
 
-Front-end
+\subsubsection*{Front-End}
 	You want to use a GUI frontend together with cross-gdb, e.g.,
-		ddd --debugger cross-gdb
-	NOTE: you need to set PATH prior to starting ddd/gdb, see below.
+\begin{verbatim}
+		ddd --debugger <cross_arch>-rtems-gdb
+\end{verbatim}
 
-RTMF
+	{\em Note\/}: you need to set {\tt PATH} prior to starting ddd/gdb,
+    see below.  
+
+\subsubsection*{RTMF}
 	GDB is a quite powerful program -- make sure you know how to
-	use it! The 'rtems-remote' target only adds 2 new commands.
+	use it! The `rtems-remote' target only adds 2 new commands.
 	Everything else is off-the shelf GDB.
 	Note that not all available commands necessarily make sense
 	on this specific target.
 
-Path settings
-    cross-debugging involves both, a host computer and the
+\subsubsection*{Path Settings}
+    Cross-debugging involves both, a host computer and the
     target system executing the actual code. The host computer
-    needs access to *the same version* of the object files
+    needs access to {\em the same version} of the object files
 	that the target computer is executing.
+
 	Upon connection to the target, the host computer obtains
 	a list of currently loaded object files from the target.
 	In order for the host GDB being able to locate the necessary
-	object files, the PATH environment variable must point to
+	object files, the {\tt PATH} environment variable must point to
 	the directories containing these objects. Note that GDB
-	doesn't define a dedicated path variable for 'cross-architecture
-	objects' but requires the user to set the ordinary PATH
+	doesn't define a dedicated path variable for `cross-architecture
+	objects' but requires the user to set the ordinary {\tt PATH}
 	that is also searched for host executables!
-	Note that PATH is an environment variable and cannot be
-	changed from within a GDB session (GDB's 'environ' ans 'path'
-	commands only affect the PATH as seen by a native debuggee
+	Note that {\tt PATH} is an environment variable and cannot be
+	changed from within a GDB session (GDB's \cmd{environ} ans \cmd{path}
+	commands only affect the {\tt PATH} as seen by a native debuggee
 	and don't have any effect in a cross-gdb session).
 
-	GDB also features a 'load' command to instruct the target
+	GDB also features a \cmd{load} command to instruct the target
 	computer to load/link object modules. Since the target
 	computer usually sees directory tree that is different
 	from the host, any path information is discarded from the
-	'load' argument -- instead, the target's PATH environment
+	\cmd{load} argument -- instead, the target's {\tt PATH} environment
 	variable must contain the directory where the target can
 	locate the object that is to be loaded.
 
-Starting the debugging agent
+\subsection{Starting the Debugging Agent}
 	On the target, the debugging agent must be running.
 	It needs to be linked into the system and is started
 	by calling
+\begin{verbatim}
 		rtems_gdb_start(int agent_priority, char *serial_name)
+\end{verbatim}
+
 	Passing a priority of 0 lets the daemon pick its default
 	scheduling priority. The second argument defines the
 	connection method to be used. A NULL pointer lets the
 	daemon listen on TCP port 4444 for an incoming connection,
 	if a string is passed, it must be the path to a serial
-	device, e.g., "/dev/ttyS1".
+	device, e.g., {\tt /dev/ttyS1}.
 
-	The agent can be stopped (rtems_gdb_stop()) and restarted
+	The agent can be stopped (\verb|rtems_gdb_stop()|) and restarted
 	with a different priority and/or communication method.
 
-	NOTE: rtems 4.6.2 requires a patch for this to work safely
-	      since the operation involves one task closing a socket
-		  on which another task is blocking.
+	{\em Note\/}: rtems 4.6.2 requires a patch for this to work safely
+	since the operation involves one task closing a socket
+	on which another task is blocking.
 
-
-Connecting to the Target
-------------------------
+\subsection{Connecting to the Target}
 	gdb can use either serial-port or TCP connections. Note
 	that either uses certain resources on the target (e.g.,
 	the termios driver or the TCP/IP stack, respectively)
@@ -197,96 +249,147 @@ Connecting to the Target
 	when the debuggee runs into a breakpoint.
 
 	The syntax for connecting to a target is (TCP)
+\begin{verbatim}
 		(gdb) target rtems-remote <target>:4444
+\end{verbatim}
 	or
+\begin{verbatim}
 		(gdb) target rtems-remote <com_port_on_host>
+\end{verbatim}
 	(serial) -- note that the agent's serial port runs at
-	115200 8N1 -- use GDB's 'remote baud' command.
+	115200 8N1 -- use GDB's \cmd{remote baud} command.
 
-	Note that 'rtems-remote' is an extension of the
-	standard GDB 'remote' target -- it adds support
-	for CEXP modules (names, section addresses etc.).
+	Note that \cmd{rtems-remote} is an extension of the
+	standard GDB `remote' target -- it adds support
+	for Cexp modules (names, section addresses etc.).
 
 	Once connected to the target, the debugger is
 	attached to a dummy thread context. All user and
 	system threads are executing normally at this point.
 
-	Use the 'detach' command to close the connection
+	Use the \cmd{detach} command to close the connection
 	to the target at any time. All stopped threads will
 	be resumed.
 
-Switching thread context
-------------------------
+\subsection{Switching Thread Context}
 	In order to inspect a thread's stack, registers etc.
 	it must be stopped.
 	A thread is stopped either because it runs into a
 	breakpoint or if the debugger is explicitely
-	attached to it ('t' command). If you want to attach
-	to a specific thread you need to know its 'id'
+	attached to it (\cmd{thread} command). If you want to attach
+	to a specific thread you need to know its `id'
 	(i.e., GDB's id which is orthogonal to the RTEMS task id
-	-- use 'info threads' to obtain a task list).
+	-- use \cmd{info threads} to obtain a task list).
 
 	Once stopped, a thread remains suspended until you
-	issue the 'continue' command or 'detach' (terminate
+	issue the \cmd{continue} command or \cmd{detach} (terminate
 	the session). At this point, all threads are resumed.
 
-	You can hit <Ctrl>-C to interrupt the target; this
-	only interrupts the 'dummy'/'helper' thread and
-	attaches GDB to it.
-
-	I.e., 
-		target rtems-remote xxx:4444	// connect, attach to 'helper'
+	You can hit \cmd{$<$Ctrl$>$-C} to interrupt the target; this
+	only interrupts the `dummy'/`helper' thread and
+	attaches GDB to it.  I.e., 
+\begin{verbatim}
+		target rtems-remote xx:4444 //connect, attach to 'helper'
+\end{verbatim}
 	At this point, the helper is stopped - you can inspect its
 	registers etc. everyone else continues normally
+\begin{verbatim}
 		info threads
-		t  14            // switch to thread ID 14
+		t  14            //switch to thread ID 14
+\end{verbatim}
 	Thread 14 is stopped. The helper remains stopped. Inspect
 	T14's registers + stack
-		t 12             // switch to thread ID 12
+\begin{verbatim}
+		t 12             //switch to thread ID 12
+\end{verbatim}
 	helper, T14 and T12 are stopped; inspect T12's registers + stack
-		cont            // resume everything
+\begin{verbatim}
+		cont             //resume everything
+\end{verbatim}
 	helper, T14 and T12 are resumed
-		<Ctrl>-C		// interrupt
+\begin{verbatim}
+		<Ctrl>-C         //interrupt
+\end{verbatim}
 	interrupt, stop helper and attach to it - same state as
 	after connection was established.
 
-RTEMS Specific Commands
------------------------
-	- use 'rtems load'          instead of 'load'
-	- use 'target rtems-remote' instead of 'remote'
-	- 'rtems sync-objs' -- (re)-synchronize gdb's file/section data
+\subsection{DDD Note}
+After reloading any object on the target (using the \cmd{rtems load} or
+\cmd{rtems sync-objs} commands) the source code displayed
+by DDD may not be current (since the commands were performed
+at the GDB level, unnoticed by \cmd{ddd}).
+Use \cmd{ddd}'s \cmd{Reload Source} menu entry from the
+\cmd{Source} pull-down menu or the equivalent accelerator key combination
+\verb|<Ctrl>-<Shift>-L| (default) to refresh the display.
+
+\section{RTEMS Specific GDB Commands}
+\begin{itemize}
+\item
+use \cmd{rtems load} instead of \cmd{load}.
+
+\item
+use \cmd{target rtems-remote} instead of \cmd{target remote}.
+With statically linked applications the plain \cmd{remote}
+target is enough -- the enhanced target version \cmd{rtems-remote} has added
+support for loadable modules: it queries the target for
+a list of loaded objects and their section addresses.
+
+\item
+\cmd{rtems sync-objs} (re)-synchronize gdb's file and section information
 	  with what's current on the target. Use this command if you
-	  added, removed or re-loaded modules from the Cexp> prompt
-	  instead of using 'rtems load' from inside GDB.
-	- 'info threads': semantics have slightly changed. Only a list
+	  added, removed or re-loaded modules from the Cexp$>$ prompt
+	  instead of using \cmd{rtems load} from inside GDB.
+
+\item
+\cmd{info threads} semantics have slightly changed. Only a list
 	  of thread IDs/names is retrieved but not their stack frame
 	  or IP address (impossible without stopping all threads).
+\end{itemize}
 
-<<TODO>>
+\verb|<<TODO>>|
+
 	More details; more commands; more implementation specifica
-<</TODO>>
+
+\verb|<</TODO>>|
 	
 
-EXAMPLE SESSION:
-================
+\section{Example Session}
 	Assume you compiled a module in your home directory
+\begin{verbatim}
 		cross-gcc -g -c blah.c -o /home/john/blah.o
+\end{verbatim}
     You copy the object to a TFTP server where it can be
-	'seen' by the target.
+	`seen' by the target.
+\begin{verbatim}
 		cp blah.o /tftpboot
-	Prior to starting a debugging session, the PATH on the
+\end{verbatim}
+	Prior to starting a debugging session, the {\tt PATH} on the
 	host is set up:
+\begin{verbatim}
 		setenv PATH $PATH":/home/john"
-	On the target, (e.g., via startup script or from the Cexp>
+\end{verbatim}
+	On the target, (e.g., via startup script or from the Cexp$>$
 	prompt) the PATH is also setup:
+\begin{verbatim}
 		Cexp> setenv("PATH","/TFTP/BOOTP_HOST/:<more dirs>:",1)
+\end{verbatim}
 	Start a GDB session on the host
-		cross-gdb
+\begin{verbatim}
+		powerpc-rtems-gdb
+\end{verbatim}
 	Connect to the target
+\begin{verbatim}
 		(gdb) target rtems-remote <target>:4444
-		<gdb obtains object file list and searches PATH for 'blah.o'>
-	Recompile 'blah.c'
+		// gdb obtains object file list and searches
+        // PATH for 'blah.o'
+\end{verbatim}
+	Recompile `blah.c'
+\begin{verbatim}
 		cross-gcc -g -c blah.c -o /home/john/blah.o
 		cp blah.o /tftpboot
+\end{verbatim}
 	Reload module from GDB prompt
+\begin{verbatim}
 		(gdb) rtems load blah.o
+\end{verbatim}
+\end{document}
