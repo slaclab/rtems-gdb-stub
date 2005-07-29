@@ -766,7 +766,6 @@ rtems_gdb_daemon (rtems_task_argument arg)
 {
   char				*ttyName = (char*)arg;
   char              *ptr, *pto;
-  const char        *pfrom;
   char              *chrbuf = 0;
   int               sd,regno,i,j;
   RtemsDebugMsg     current = 0;
@@ -775,6 +774,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
   int               tidx = 0;
   int               ehandler_installed=0;
 #ifdef HAVE_CEXP
+  const char        *pfrom;
   CexpModule		mod   = 0;
   CexpSym           *psectsyms = 0;
 #endif
@@ -1114,8 +1114,9 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			if (*chrbuf)
 	  			mem2hex (chrbuf, remcomOutBuffer, i+1);
 		}
+	  }
 #ifdef HAVE_CEXP
-	  } else if ( !strcmp(ptr+1,"CexpFileList") ) {
+	    else if ( !strcmp(ptr+1,"CexpFileList") ) {
 		  if ( 'f' == *ptr ) {
 			mod = cexpSystemModule->next;
 		  }
