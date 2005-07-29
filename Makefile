@@ -81,8 +81,8 @@ LDFLAGS   +=
 #  'make clobber' already includes 'make clean'
 #
 
-CLEAN_ADDITIONS += *.pdf *.out *.toc *.aux *.log
-CLOBBER_ADDITIONS +=
+CLEAN_ADDITIONS += *.out *.toc *.aux *.log
+CLOBBER_ADDITIONS += *.pdf
 
 all:	${ARCH} $(SRCS) $(PGMS) $(LIB)
 
@@ -147,3 +147,8 @@ $(RTEMS_SITE_DOCDIR)/gdb/rtems-gdb-stub.pdf: rtems-gdb-stub.pdf
 $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub/index.html: rtems-gdb-stub.tex
 	@mkdir -p $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub
 	latex2html -split 4 -dir $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub rtems-gdb-stub
+
+REVISION=$(filter-out $$%,$$Name$$)
+
+tar:
+	@$(make-tar)
