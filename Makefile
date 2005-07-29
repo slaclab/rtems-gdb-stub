@@ -5,6 +5,15 @@
 # 	Template leaf node Makefile
 #
 
+#point to cexp source directory (only needed if USE_CEXP=yes)
+#i.e., where the cexpmodP.h header can be found
+CEXP_SOURCE_PATH=../cexp
+
+#must be lower-case 'yes' (no quotes) to enable
+USE_CEXP=yes
+#must be lower-case 'yes' (no quotes) to enable
+USE_LIBBSPEXT=yes
+
 # C source names, if any, go here -- minus the .c
 C_PIECES=rtems-stub $(STUB_$(RTEMS_CPU)) rtems-stub.modini
 C_FILES=$(C_PIECES:%=%.c)
@@ -58,9 +67,15 @@ include $(RTEMS_ROOT)/make/lib.cfg
 #
 # (OPTIONAL) Add local stuff here using +=
 #
+ifeq ($(USE_LIBBSPEXT),yes)
+DEFINES  += -DHAVE_LIBBSPEXT
+endif
+ifeq ($(USE_CEXP),yes)
+DEFINES  += -DHAVE_CEXP
+CPPFLAGS += -I$(CEXP_SOURCE_PATH)
+HCHECK    = $(CEXP_SOURCE_PATH)/cexpmodP.h
+endif
 
-DEFINES  += -DHAVE_LIBBSPEXT -DHAVE_CEXP
-CPPFLAGS += -I../cexp
 CFLAGS   +=
 
 #
@@ -84,7 +99,7 @@ LDFLAGS   +=
 CLEAN_ADDITIONS += *.out *.toc *.aux *.log
 CLOBBER_ADDITIONS += *.pdf
 
-all:	${ARCH} $(SRCS) $(PGMS) $(LIB)
+all:	${HCHECK} ${ARCH} $(SRCS) $(PGMS) $(LIB)
 
 #How to make a relocatable object
 $(filter %.obj, $(PGMS)): ${OBJS}
@@ -152,3 +167,8 @@ REVISION=$(filter-out $$%,$$Name$$)
 
 tar:
 	@$(make-tar)
+
+ifdef HCHECK
+$(HCHECK):
+	$(error "$@" not found! Edit the Makefile and fix CEXP_SOURCE_PATH)
+endif
