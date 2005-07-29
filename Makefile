@@ -132,6 +132,8 @@ ${RTEMS_SITE_INSTALLDIR}/$(RTEMS_BSP)/bin :
 install:  all $(RTEMS_SITE_INSTALLDIR)/bin docinst
 	$(INSTALL_VARIANT) -m 555 ${PGMS} ${PGMS:%.exe=%.bin} ${PGMS:%.exe=%.sym} ${RTEMS_SITE_INSTALLDIR}/bin
 
+doc: rtems-gdb-stub.pdf
+
 docinst: $(RTEMS_SITE_DOCDIR)/gdb/rtems-gdb-stub.pdf $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub/index.html
 
 %.pdf: %.tex
@@ -144,4 +146,4 @@ $(RTEMS_SITE_DOCDIR)/gdb/rtems-gdb-stub.pdf: rtems-gdb-stub.pdf
 
 $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub/index.html: rtems-gdb-stub.tex
 	@mkdir -p $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub
-	latex2html -dir $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub rtems-gdb-stub
+	latex2html -split 4 -dir $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub rtems-gdb-stub
