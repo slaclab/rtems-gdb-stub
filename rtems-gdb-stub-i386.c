@@ -226,11 +226,8 @@ RtemsDebugMsgRec msg;
 		return;
 	}
 
-if ( rtems_remote_debug & DEBUG_SCHED ) {
-	printk("Task %x got exception %i, frame %x, sp %x, IP %x\n\n",
+	KDBGMSG(DEBUG_SCHED, "Task %x got exception %i, frame %x, sp %x, IP %x\n\n",
 		msg.tid,f->idtIndex, f, f->esp0, f->eip);
-	printk("\n");
-}
 
 	/* the debugger should be able to handle its own exceptions */
 	msg.frm = f;
@@ -288,10 +285,8 @@ if ( rtems_remote_debug & DEBUG_SCHED ) {
 		return;
 	}
 
-if ( rtems_remote_debug & DEBUG_SCHED ) {
-	printk("Resumed from exception; contSig %i, sig %i, ESP 0x%08x PC 0x%08x EBP 0x%08x\n",
+	KDBGMSG(DEBUG_SCHED, "Resumed from exception; contSig %i, sig %i, ESP 0x%08x PC 0x%08x EBP 0x%08x\n",
 		msg.contSig, msg.sig, msg.frm->esp0, msg.frm->eip, msg.frm->ebp);
-}
 
 	if ( SIGCONT != msg.contSig ) {
 		msg.frm->eflags |= EFLAGS_TRAP;
@@ -328,10 +323,8 @@ rtems_unsigned32 flags;
 	}
 	rtems_interrupt_enable(flags);
 	if ( rval ) {
-		if (action)
-			fprintf(stderr,"ERROR: exception handler already installed\n");
-		else
-			fprintf(stderr,"ERROR: exception handler has changed; cannot uninstall\n");
+		ERRMSG("ERROR: exception handler %s\n",
+				action ? "already installed" : "has changed; cannot uninstall");
 	}
 	return rval;
 }

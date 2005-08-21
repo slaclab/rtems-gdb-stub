@@ -212,15 +212,18 @@ unsigned long volatile diff;
 	diff      =  (unsigned long)(stk->stack.frame+FRAME_SZ);
 	diff     -=  (unsigned long)SP(m->frm);
 
+#ifdef DEBUGGING_ENABLED
 if ( DEBUG_STACK & rtems_remote_debug ) {
 	unsigned sp,bp;
 	printk("OLD STK %x,  m %x, m->frm %x\n",stk,m,m?(unsigned)m->frm:0xdeadbeef);
 	SP_GET(sp); BP_GET(bp);
 	printk("OLD BP  %x, SP %x, diff %x\n",bp,sp,diff);
 }
+#endif
 
 	flip_stack((Frame)SP(m->frm), diff);
 
+#ifdef DEBUGGING_ENABLED
 if ( DEBUG_STACK & rtems_remote_debug ) {
 	unsigned sp,bp;
 	printk("NEW STK %x\n",stk);
@@ -228,13 +231,12 @@ if ( DEBUG_STACK & rtems_remote_debug ) {
 	SP_GET(sp); BP_GET(bp);
 	printk("NEW BP  %x, SP %x diff %x\n",bp,sp,diff);
 }
+#endif
 
 	m = RELOC(m);
 	m->frm = RELOC(m->frm);
 
-if ( DEBUG_STACK & rtems_remote_debug ) {
-	printk("POST-RELOC: m %x, m->frm %x\n",m,m?(unsigned)m->frm:0xdeadbeef);
-}
+KDBGMSG(DEBUG_STACK, "POST-RELOC: m %x, m->frm %x\n",m,m?(unsigned)m->frm:0xdeadbeef);
 
 	post_and_suspend(m);
 
@@ -250,10 +252,8 @@ if ( DEBUG_STACK & rtems_remote_debug ) {
 
 	m = RELOC(m); m->frm = RELOC(m->frm);
 
-if ( DEBUG_STACK & rtems_remote_debug ) {
-	printk("BACK resuming at (m %x, frm %x) PC %x SP %x\n",
-		m, m->frm, PC(m->frm), SP(m->frm));
-}
+KDBGMSG(DEBUG_STACK, "BACK resuming at (m %x, frm %x) PC %x SP %x\n",
+			m, m->frm, PC(m->frm), SP(m->frm));
 
 	/* free up the frame -- this context runs until the
 	 * frame is popped without interruption, hence adding

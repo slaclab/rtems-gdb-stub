@@ -190,18 +190,15 @@ static struct {
 } stepOverState = { -1,0,0 };
 RtemsDebugMsgRec msg;
 
-    if (   rtems_interrupt_is_in_progress()
+	if (   rtems_interrupt_is_in_progress()
 	    || !_Thread_Executing 
 		|| (RTEMS_SUCCESSFUL!=rtems_task_ident(RTEMS_SELF,RTEMS_LOCAL, &msg.tid)) ) {
 		/* unable to deal with this situation */
 		return -1;
 	}
 
-if ( rtems_remote_debug & DEBUG_SCHED ) {
-printk("Task %x got exception %i, frame %x, GPR1 %x, IP %x\n\n",
-	msg.tid,f->_EXC_number, f, f->GPR1, f->EXC_SRR0);
-printk("\n");
-}
+	KDBGMSG(DEBUG_SCHED, "Task %x got exception %i, frame %x, GPR1 %x, IP %x\n\n",
+							msg.tid,f->_EXC_number, f, f->GPR1, f->EXC_SRR0);
 
 	/* the debugger should be able to handle its own exceptions */
 	msg.frm = f;
@@ -287,10 +284,8 @@ printk("\n");
 		return -1;
 	}
 
-if ( rtems_remote_debug & DEBUG_SCHED ) {
-printk("Resumed from exception; contSig %i, sig %i, GPR1 0x%08x PC 0x%08x LR 0x%08x\n",
-		msg.contSig, msg.sig, msg.frm->GPR1, msg.frm->EXC_SRR0, msg.frm->EXC_LR);
-}
+	KDBGMSG(DEBUG_SCHED, "Resumed from exception; contSig %i, sig %i, GPR1 0x%08x PC 0x%08x LR 0x%08x\n",
+						msg.contSig, msg.sig, msg.frm->GPR1, msg.frm->EXC_SRR0, msg.frm->EXC_LR);
 
 		/* resuming; we might have to step over a breakpoint */
 	if ( (stepOverState.trapno = TRAPNO(*(volatile unsigned long *)f->EXC_SRR0)) >= 0 ) {
@@ -365,10 +360,8 @@ rtems_unsigned32 flags;
 	}
 #endif
 	if ( rval ) {
-		if (action)
-			fprintf(stderr,"ERROR: exception handler already installed\n");
-		else
-			fprintf(stderr,"ERROR: exception handler has changed; cannot uninstall\n");
+		ERRMSG("ERROR: exception handler %s\n",
+				action ? "already installed" : "has changed; cannot uninstall");
 	}
 	return rval;
 }
@@ -470,6 +463,7 @@ Thread_Control *tcb;
 	return -1;
 }
 
+#if 0
 int faul()
 {
 Frame sp;
@@ -479,3 +473,4 @@ unsigned long lr;
 		lr, sp, sp->up, sp->up->up);
 	return (int)sp;
 }
+#endif

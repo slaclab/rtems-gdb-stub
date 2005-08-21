@@ -7,15 +7,70 @@
 /* The daemon's TID */
 extern volatile rtems_id rtems_gdb_tid;
 
+#if !defined(DEBUGGING_ENABLED) && !defined(DEBUGGING_DISABLED)
+#define DEBUGGING_ENABLED
+#endif
+
 /* Debugging; the 'rtems_remote_debug' variable can be set to a 'ORed' 
  *            bitset. Note: this var can be set using gdb itself :-)
  */
-#define DEBUG_SCHED (1<<0)	/* log task switching, stopping, resuming, etc. */
-#define DEBUG_SLIST (1<<1)  /* log what happens on the 'stopped' list       */
-#define DEBUG_COMM  (1<<2)  /* log remcom proto messages to/from gdb        */
-#define DEBUG_STACK (1<<3)  /* log stack switching related messages         */
+#define MSG_ERROR   (1<<0)	/* print error messages; on by default          */
+#define MSG_INFO    (1<<1)	/* print informational messages; on by default  */
+#define DEBUG_SCHED (1<<8)	/* log task switching, stopping, resuming, etc. */
+#define DEBUG_SLIST (1<<9)	/* log what happens on the 'stopped' list       */
+#define DEBUG_COMM  (1<<10)	/* log remcom proto messages to/from gdb        */
+#define DEBUG_STACK (1<<11)	/* log stack switching related messages         */
 
 extern volatile int rtems_remote_debug;
+
+/* Macros for message logging; when using stdio (fprintf(stderr) or perror, ...)
+ * the MSG_INFO / MSG_ERROR flags must be checked as there are scenarios
+ * (daemon running in foreground on stdio) where all messages must be silenced.
+ *
+ */
+#define INFMSG(fmt...)			\
+	do { 						\
+		if ( rtems_remote_debug & MSG_INFO ) \
+			fprintf(stderr,fmt);\
+	} while (0)
+
+#define ERRMSG(fmt...)			\
+	do { 						\
+		if ( rtems_remote_debug & MSG_ERROR ) \
+			fprintf(stderr,fmt);\
+	} while (0)
+
+/* from exception context */
+#define KINFMSG(fmt...)			\
+	do { 						\
+		if ( rtems_remote_debug & MSG_INFO ) \
+			printk(fmt);		\
+	} while (0)
+
+#define KERRMSG(fmt...)			\
+	do { 						\
+		if ( rtems_remote_debug & MSG_ERROR ) \
+			printk(fmt);		\
+	} while (0)
+
+#ifdef DEBUGGING_ENABLED
+/* debug messages check appropriate debug facility */
+#define DBGMSG(facility, fmt...)	\
+	do {
+		if ( rtems_remote_debug & (facility) ) \
+			fprintf(stderr,fmt);	\
+	} while (0)
+
+#define KDBGMSG(facility, fmt...)	\
+	do {
+		if ( rtems_remote_debug & (facility) ) \
+			printk(fmt);	\
+	} while (0)
+#else
+#define DBGMSG(facility, fmt...)	do {} while (0)
+#define KDBGMSG(facility, fmt...)	do {} while (0)
+#endif
+
 
 /* Selective breakpoints: The GDB remote protocol has no provision to set
  *                        breakpoints on a pre-thread basis. You can set

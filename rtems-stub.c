@@ -263,8 +263,14 @@ STATIC jmp_buf remcomEnv;
 STATIC char remcomInBuffer[BUFMAX];
 STATIC char remcomOutBuffer[BUFMAX];
 
-#define GETCHAR() \
-	  do { if ( (ch = getDebugChar()) < 0 ) { if (ch) perror("GETCHAR"); else fprintf(stderr,"GETCHAR ZERO\n"); return 0;} }  while (0)
+/* newlib strerror is reentrant */
+#define GETCHAR()		\
+	do {				\
+		if ( (ch = getDebugChar()) < 0 ) {								\
+			ERRMSG("GETCHAR: %s\n", ch ? strerror(errno) : "<NULL>");	\
+			return 0;	\
+		}				\
+	}  while (0)
 
 #ifdef OBSOLETE_IO
 #include "obsolete_io.c"
@@ -272,14 +278,27 @@ STATIC char remcomOutBuffer[BUFMAX];
 #  define getpacket(buf) getpacket()
 #else
 
+/* setup raw terminal; return old flags in *olda (if non-null)
+ *
+ * RETURNS: 0 on success; -1 on error.
+ */
+
 static int
-setup_term(int fd)
+setup_term(int fd, struct termios *olda)
 {
-struct termios newa;
+struct termios	newa;
+char			*msg=0;
+
 	if ( !isatty(fd) ) {
-		fprintf(stderr,"File descriptor not a terminal\n");
+		ERRMSG("File descriptor not a terminal\n");
 		return -1;
 	}
+	if ( olda && tcgetattr(fd, olda ) ) {
+		msg="getting old terminal attributes";
+		olda = 0;
+		goto bail;
+	}
+
 	memset(&newa,0,sizeof(newa));
     newa.c_iflag     = IXON | INPCK;
     newa.c_oflag     = 0;
@@ -288,13 +307,23 @@ struct termios newa;
     newa.c_cc[VMIN]  = 1;
     newa.c_cc[VTIME] = 0;
     if ( cfsetispeed(&newa, B115200) || cfsetospeed(&newa, B115200) ) {
-        perror("setting speed to 115k");
-        return -1;
+        msg="setting speed to 115k";
+		goto bail;
     }
     if ( tcsetattr(fd, TCSANOW, &newa) ) {
-        perror("setting new attributes");
-        return -1;
+        msg="setting new terminal attributes";
+		goto bail;
     }
+
+bail:
+	if ( msg ) { /* some error occurred */
+		ERRMSG("%s: %s\n",msg,strerror(errno));
+
+		/* try to restore */
+		if (olda)
+			tcsetattr(fd, TCSANOW, olda);
+		return -1;
+	}
 	return 0;
 }
 
@@ -318,10 +347,8 @@ int				n,ch = 0;
 
 		putDebugChar('-');
 		flushDebugChars();
-		if ( rtems_remote_debug ) {
-			fprintf(stderr,"Checksum mismatch: counted %x, xmit-sum is %x, string %s\n",
+		DBGMSG(DEBUG_COMM, "Checksum mismatch: counted %x, xmit-sum is %x, string %s\n",
 					chks, xchks, buf);
-		}
 
 synchronize:
 
@@ -378,13 +405,10 @@ register int           i;
 		putDebugChar(hexchars[chks>>4]);
 		putDebugChar(hexchars[chks & 0xf]);
 		flushDebugChars();
-		if ( rtems_remote_debug & DEBUG_COMM ) {
-			fprintf(stderr,"Putting packet: %s\n",buf);
-		}
+		DBGMSG(DEBUG_COMM, "Putting packet: %s\n",buf);
 		i = getDebugChar();
 	} while ( i > 0 && '+' != i );
-	if ( rtems_remote_debug & DEBUG_COMM)
-		fprintf(stderr,"PUTPACK return i %i\n",i);
+	DBGMSG(DEBUG_COMM, "PUTPACK return i %i\n",i);
 	return i<=0;	
 }
 
@@ -452,13 +476,6 @@ register int j = 2*sizeof(i);
 	return buf+2*sizeof(i);
 }
 
-STATIC void
-debug_error (char *format, char *parm)
-{
-  if (rtems_remote_debug)
-    fprintf (stderr, format, parm);
-}
-
 volatile rtems_id  rtems_gdb_tid       = 0;
 volatile int       rtems_gdb_sd        = -1;
 volatile rtems_id  rtems_gdb_break_tid = 0;
@@ -473,8 +490,7 @@ int rval, do_free;
 	if ( tid ) {
 		m = threadOnListBwd(&stopped, tid);
 		if ( m ) {
-			if ( rtems_remote_debug & DEBUG_SLIST )
-				fprintf(stderr,"stopped: removed %x\n", m->tid);
+			DBGMSG(DEBUG_SLIST, "stopped: removed %x\n", m->tid);
 			cdll_remove_el(&m->node);
 			/* see comment below why we use 'do_free' */
 			do_free = (m->frm == 0);
@@ -484,15 +500,14 @@ int rval, do_free;
 				msgFree(m);
 			}
 		} else {
-			fprintf(stderr,"Unable to resume 0x%08x -- not found on stopped list\n", tid);
+			ERRMSG("Unable to resume 0x%08x -- not found on stopped list\n", tid);
 			rval = -1;
 		}
 	} else {
 		rval = 0;
 		/* release all currently stopped threads */
 		while ( (m=msgHeadDeQ(&stopped)) ) {
-			if ( rtems_remote_debug & DEBUG_SLIST )
-				fprintf(stderr,"stopped: removed %x from head\n", m->tid);
+			DBGMSG(DEBUG_SLIST, "stopped: removed %x from head\n", m->tid);
 			do_free = (m->frm == 0);
 			/* cannot access 'msg' after resuming. If it
 			 * was a 'real', i.e., non-frameless message then
@@ -500,8 +515,7 @@ int rval, do_free;
 			 * thread.
 			 */
 			if ( task_resume(m, sig) ) {
-				if ( rtems_remote_debug & DEBUG_SCHED )
-					fprintf(stderr,"Task resume %x FAILURE\n",m->tid);
+				DBGMSG(DEBUG_SCHED, "Task resume %x FAILURE\n",m->tid);
 				rval = -1;
 			}
 			if ( do_free ) {
@@ -533,8 +547,7 @@ RtemsDebugMsg msg;
 
 static void cleanup_connection()
 {
-	if ( rtems_remote_debug & DEBUG_SCHED )
-		printf("Releasing connection\n");
+	DBGMSG(DEBUG_SCHED, "Releasing connection\n");
 
 	detach_all_tasks();
 
@@ -779,6 +792,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
   CexpSym           *psectsyms = 0;
 #endif
   int				addr,len,sarg;
+  char				*msg = 0;
   /* startup / initialization */
   {
     if ( RTEMS_SUCCESSFUL !=
@@ -793,7 +807,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		goto cleanup;
 	}
 	if ( !(chrbuf = malloc(CHRBUFSZ)) ) {
-		fprintf(stderr,"no memory\n");
+		ERRMSG("no memory\n");
 		goto cleanup;
 	}
 
@@ -803,7 +817,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
       /* create socket */
       rtems_gdb_sd = socket(PF_INET, SOCK_STREAM, 0);
 	  if ( rtems_gdb_sd < 0 ) {
-		perror("GDB daemon: socket");
+		msg="socket";
 		goto cleanup;
 	  }
 
@@ -816,11 +830,11 @@ rtems_gdb_daemon (rtems_task_argument arg)
       srv.sin_port   = htons(RTEMS_GDB_PORT);
       sarg           = sizeof(srv);
       if ( bind(rtems_gdb_sd,(struct sockaddr *)&srv,sarg)<0 ) {
-        perror("GDB daemon: bind");
+        msg="bind";
 		goto cleanup;
       };
 	  if ( listen(rtems_gdb_sd, 1) ) {
-		perror("GDB daemon: listen");
+		msg = "listen";
 		goto cleanup;
 	  }
     }
@@ -834,7 +848,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
   initialized = 1;
 
-  fprintf(stderr,"GDB daemon: starting up\n");
+  INFMSG("GDB daemon: starting up\n");
 
   while (initialized) {
 
@@ -850,18 +864,18 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		struct sockaddr_in a;
 		int                a_s = sizeof(a);
 		if ( (sd = accept(rtems_gdb_sd, (struct sockaddr *)&a, &a_s)) < 0 ) {
-			perror("GDB daemon: accept");
+			msg = "accept";
 			goto cleanup;
 		}
 		sarg = 1;
       	if ( setsockopt(sd, IPPROTO_TCP, TCP_NODELAY, &sarg, sizeof(sarg)) ) {
-			perror("setsockopt TCP_NODELAY");
+			msg = "setsockopt TCP_NODELAY";
 			goto cleanup;
 		}
 	} else {
 		/* serial I/O */
 		if ( (sd = open(ttyName, O_RDWR)) < 0 ) {
-			perror("GDB daemon: opening tty");
+			msg = "opening tty";
 			goto cleanup;
 		}
 		/* no need for saving attributes - defaults are restored on fd close */
@@ -872,7 +886,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	}
 
 	if ( !(rtems_gdb_strm = fdopen(sd, "r+")) ) {
-		perror("GDB daemon: unable to open stream");
+		msg = "unable to open stream";
 		close(sd);
 		goto cleanup;
 	}
@@ -904,7 +918,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	  break;
 
 	case 'd':
-	  rtems_remote_debug = !(rtems_remote_debug);	/* toggle debug flag */
+	  rtems_remote_debug ^= DEBUG_COMM;	/* toggle debug flag */
 	  break;
 
 		/* Detach */
@@ -979,7 +993,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			mem2hex ((char *) addr, remcomOutBuffer, len);
 		} else {
 			strcpy (remcomOutBuffer, "E03");
-			debug_error ("%s\n","bus error");
+			ERRMSG("bus error\n");
 	    }
 		rtems_gdb_handle_exception = 0;
 	break;
@@ -1000,7 +1014,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			strcpy (remcomOutBuffer, "OK");
 		} else {
 	      strcpy (remcomOutBuffer, "E03");
-	      debug_error ("%s\n","bus error");
+	      ERRMSG("bus error\n");
 	    }
 		rtems_gdb_handle_exception = 0;
 
@@ -1085,7 +1099,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 				sprintf(remcomOutBuffer,"C%x",(unsigned)crc32((char*)addr, len, -1));
 			} else {
 	      		strcpy (remcomOutBuffer, "E03");
-	      		debug_error ("%s\n","bus error");
+	      		ERRMSG("bus error\n");
 			}
 			rtems_gdb_handle_exception = 0;
 		}
@@ -1231,7 +1245,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			strcpy(remcomOutBuffer,"OK");
 		} else {
 	      	strcpy (remcomOutBuffer, "E03");
-	      	debug_error ("%s\n","bus error");
+	      	ERRMSG("bus error\n");
 		}
 		rtems_gdb_handle_exception = 0;
 	  break;
@@ -1259,7 +1273,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 				}
 			} else {
 	      		strcpy (remcomOutBuffer, "E03");
-	      		debug_error ("%s\n","bus error");
+	      		ERRMSG("bus error\n");
 			}
 			rtems_gdb_handle_exception = 0;
 			break;
@@ -1285,7 +1299,9 @@ release_connection:
 
 /* shutdown */
 cleanup:
-  fprintf(stderr,"GDB daemon: shutting down\n");
+  if ( msg )
+	ERRMSG("GDB daemon - %s: %s\n", msg, strerror(errno));
+  INFMSG("GDB daemon: shutting down\n");
 
   if ( gdb_pending_id )
 	rtems_semaphore_delete( gdb_pending_id );
@@ -1481,8 +1497,7 @@ task_resume(RtemsDebugMsg msg, int sig)
 {
 rtems_status_code sc = -1;
 
-	if ( rtems_remote_debug & DEBUG_SCHED )
-		fprintf(stderr,"task_resume(%08x, %2i)\n",msg->tid, sig);
+	DBGMSG(DEBUG_SCHED, "task_resume(%08x, %2i)\n",msg->tid, sig);
 
 	if ( msg->tid ) {
 
@@ -1494,8 +1509,7 @@ rtems_status_code sc = -1;
 				return 0;
 			} else {
 				theHelperMsg = 0;
-				if ( rtems_remote_debug & DEBUG_SCHED )
-					fprintf(stderr,"STARTING DUMMY with sig %i\n",msg->sig);
+				DBGMSG(DEBUG_SCHED, "STARTING DUMMY with sig %i\n",msg->sig);
 				msg->sig = SIGTRAP;
 			}
 		}
@@ -1518,8 +1532,7 @@ rtems_status_code sc = -1;
 				|| 0 == rtems_gdb_tgt_single_step(msg)
 	   */
 			   ) {
-				if ( rtems_remote_debug & DEBUG_SCHED )
-					fprintf(stderr,"Resuming 0x%08x with sig %i\n",msg->tid, msg->contSig);
+				DBGMSG(DEBUG_SCHED, "Resuming 0x%08x with sig %i\n",msg->tid, msg->contSig);
 				sc = rtems_task_resume(msg->tid);
 			}
 			return RTEMS_SUCCESSFUL == sc ? 0 : -2;
@@ -1623,13 +1636,11 @@ task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 	/* bring to head of stopped list */
 	if ( threadOnListBwd(&stopped, cur->tid) ) {
 		/* remove */
-		if ( rtems_remote_debug & DEBUG_SLIST )
-			fprintf(stderr,"stopped list: removing %x\n", cur->tid);
+		DBGMSG(DEBUG_SLIST, "stopped list: removing %x\n", cur->tid);
 		cdll_remove_el(&cur->node);
 	}
 	/* add to head */
-	if ( rtems_remote_debug & DEBUG_SLIST )
-		fprintf(stderr,"stopped list: adding %x at head\n", cur->tid);
+	DBGMSG(DEBUG_SLIST, "stopped list: adding %x at head\n", cur->tid);
 	cdll_splerge_head(&stopped, (CdllNode)cur);
 return cur;
 }
@@ -1644,9 +1655,7 @@ static void post_and_suspend(RtemsDebugMsg msg)
 {
 	cdll_init_el(&msg->node);
 	cdll_splerge_tail(&anchor, &msg->node);
-	if ( rtems_remote_debug & DEBUG_STACK ) {
-		printk("Posted 0x%08x\n", msg);
-	}
+	KDBGMSG(DEBUG_STACK, "Posted 0x%08x\n", msg);
 
 	/* notify the daemon that a stopped thread is available
 	 * (this action may already switch context!)
@@ -1662,7 +1671,7 @@ static void post_and_suspend(RtemsDebugMsg msg)
 		rtems_task_suspend( msg->tid );
 	
 		if ( msg->node.n != &msg->node || msg->node.p != &msg->node ) {
-			printk("GDB daemon (from exception handler) FATAL ERROR: message still on a list???\n");
+			KERRMSG("GDB daemon (from exception handler) FATAL ERROR: message still on a list???\n");
 		} else {
 			return;
 		}
@@ -1701,10 +1710,10 @@ int rtems_gdb_notify_and_suspend(RtemsDebugMsg msg)
 		return -1;
 	}
 
-	if ( rtems_remote_debug & DEBUG_STACK )
-		printk("NOTIFY with sig %i\n",msg->sig);
+	KDBGMSG(DEBUG_STACK, "NOTIFY with sig %i\n",msg->sig);
 
-	if ( rtems_gdb_thread_is_dead(msg) ) {
+#ifdef DEBUGGING_ENABLED
+	if ( (rtems_remote_debug & MSG_INFO) && rtems_gdb_thread_is_dead(msg) ) {
 		/* TODO: should have a dedicated logging task for I/O from exception/ISR context */
 		char *snm = sig2name(msg->sig);
 		printk("GDB agent: Exception (SIG");
@@ -1714,6 +1723,7 @@ int rtems_gdb_notify_and_suspend(RtemsDebugMsg msg)
 			printk(" %i",msg->sig);
 		printk(") caught; Task 0x%08x killed (suspended) -- use GDB\n", msg->tid);
 	}
+#endif
 
 	/* arch dep. code sends us SIGCHLD for a breakpoint
 	 * and SIGTRAP for single-step. We need to distinguish
@@ -1768,8 +1778,7 @@ rtems_status_code	sc;
 		while ( RTEMS_SUCCESSFUL != (sc = rtems_semaphore_obtain(gdb_pending_id, RTEMS_WAIT, t)) ) {
 			switch ( sc ) {
 				case RTEMS_TIMEOUT:
-					if ( rtems_remote_debug & DEBUG_SCHED )
-						fprintf(stderr,"Polling for msgs or chars\n");
+					DBGMSG(DEBUG_SCHED, "Polling for msgs or chars\n");
 					if ( rtems_gdb_strm ) {
 						/* poll stream for activity */
 						nchars = 0;
@@ -1830,8 +1839,7 @@ rtems_status_code	sc;
 	/* it also must be a single node; not on any list */
 	assert( msg->node.p == &msg->node && msg->node.n == &msg->node );
 
-	if ( rtems_remote_debug & DEBUG_SLIST )
-		fprintf(stderr,"stopped list: adding %x\n", msg->tid);
+	DBGMSG(DEBUG_SLIST, "stopped list: adding %x\n", msg->tid);
 
 	/* record this task on the stopped list */
 	cdll_splerge_head(&stopped, &msg->node);
@@ -1858,7 +1866,7 @@ Thread_Control		*tcb = 0;
     if (OBJECTS_LOCAL!=loc || !tcb) {
 		if (tcb)
 			_Thread_Enable_dispatch();
-        printk("Id %x not found on local node\n",tid);
+        KERRMSG("Id %x not found on local node\n",tid);
     }
 	return tcb;
 }
@@ -1877,7 +1885,7 @@ RtemsDebugMsg msg;
 	msg = getFirstMsg( 0 == *pcurrent ? BLOCK_INTERRUPTIBLE : DONT_BLOCK );
 
 	if ( !initialized ) {
-		printf("Daemon killed;\n");
+		INFMSG("Daemon killed;\n");
 		return -1;
 	}
 
@@ -1894,8 +1902,7 @@ RtemsDebugMsg msg;
 		 */
 
 		if ( ! *pcurrent ) {
-			if ( rtems_remote_debug & DEBUG_COMM )
-				printf("net event\n");
+			DBGMSG(DEBUG_COMM, "net event\n");
 			/* should be '\003' */
 			if ( getDebugChar() < 0 ) {
 				/* aborted / deamon stopped */
@@ -1936,10 +1943,12 @@ RtemsDebugMsg msg;
 		/* another thread got a signal */
   } while ( !*pcurrent );
 
+#ifdef DEBUGGING_ENABLED
   if (     (rtems_remote_debug & DEBUG_SCHED)
 		&& ! threadOnListBwd(&stopped, (*pcurrent)->tid ) ) {
-	fprintf(stderr,"OOPS: msg %p, tid %x stoppedp %p\n", msg, (*pcurrent)->tid, stopped.p);
+	fprintf(stderr, "OOPS: msg %p, tid %x stoppedp %p\n", msg, (*pcurrent)->tid, stopped.p);
   }
+#endif
   
   assert( threadOnListBwd(&stopped, (*pcurrent)->tid) );
 
