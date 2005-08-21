@@ -94,8 +94,8 @@ post_and_suspend(RtemsDebugMsg msg);
 #define BUFMAX      400		/* size of communication buffer; depends on NUMREGBYTES  */
 #define EXTRABUFSZ	200     /* size of buffer for thread extra and other string info */
 
-/*  debug !=  0 prints ill-formed commands in valid packets & checksum errors */ 
-volatile int rtems_remote_debug = 0 /* | DEBUG_SCHED | DEBUG_SLIST | DEBUG_STACK */;
+/*  debug facility; */
+volatile int rtems_remote_debug = MSG_INFO | MSG_ERROR /* | DEBUG_SCHED | DEBUG_SLIST | DEBUG_STACK */;
 
 /* Configuration Defs    */
 #define CTRLC             3
@@ -114,7 +114,8 @@ volatile int rtems_remote_debug = 0 /* | DEBUG_SCHED | DEBUG_SLIST | DEBUG_STACK
 #  define BUFMAX (2*CHRBUFSZ+100)
 #endif
 
-static volatile char initialized=0;
+static volatile signed char foreground  = 0;
+static volatile signed char	initialized = 0;
 
 /* Include GPL code */
 
@@ -283,7 +284,7 @@ STATIC char remcomOutBuffer[BUFMAX];
  * RETURNS: 0 on success; -1 on error.
  */
 
-static int
+int
 setup_term(int fd, struct termios *olda)
 {
 struct termios	newa;
@@ -476,11 +477,11 @@ register int j = 2*sizeof(i);
 	return buf+2*sizeof(i);
 }
 
-volatile rtems_id  rtems_gdb_tid       = 0;
-volatile int       rtems_gdb_sd        = -1;
-volatile rtems_id  rtems_gdb_break_tid = 0;
+volatile rtems_id  rtems_gdb_tid		= 0;
+volatile int       rtems_gdb_sd			= -1;
+volatile rtems_id  rtems_gdb_break_tid	= 0;
 
-STATIC RtemsDebugMsg	theHelperMsg = 0;
+STATIC RtemsDebugMsg	theHelperMsg	= 0;
 STATIC unsigned long    helper_frame_pc;
 
 static int resume_stopped_task(rtems_id tid, int sig)
@@ -543,18 +544,6 @@ RtemsDebugMsg msg;
 	resume_stopped_task(0, SIGCONT);
 
 	rtems_gdb_break_tid = 0;
-}
-
-static void cleanup_connection()
-{
-	DBGMSG(DEBUG_SCHED, "Releasing connection\n");
-
-	detach_all_tasks();
-
-	if ( rtems_gdb_strm ) {
-		fclose( rtems_gdb_strm );
-		rtems_gdb_strm = 0;
-	}
 }
 
 static int
@@ -793,6 +782,8 @@ rtems_gdb_daemon (rtems_task_argument arg)
 #endif
   int				addr,len,sarg;
   char				*msg = 0;
+  struct termios	*oldatts = 0;
+  int				old_msg_lvl = 0;
   /* startup / initialization */
   {
     if ( RTEMS_SUCCESSFUL !=
@@ -842,15 +833,14 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	if (rtems_gdb_tgt_install_ehandler(1))
 		goto cleanup;
 	ehandler_installed=1;
+	initialized = 1;
 	if ( !(helper_tid = rtems_gdb_thread_helper("GDBh", 200, 20000+RTEMS_MINIMUM_STACK_SIZE, helper_thread, 0)) )
 		goto cleanup;
   }
 
-  initialized = 1;
+  INFMSG("GDB daemon: starting up\n\n");
 
-  INFMSG("GDB daemon: starting up\n");
-
-  while (initialized) {
+  for ( initialized = 1; initialized; foreground ? initialized = 0 : 0) {
 
 	/* synchronize with helper task */
 	if ( !theHelperMsg ) {
@@ -860,6 +850,8 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	helper_frame_pc = rtems_gdb_tgt_get_pc( theHelperMsg );
 	current = task_switch_to(0, helper_tid);
 
+
+	/* startup / initialization */
 	if ( !ttyName ) {
 		struct sockaddr_in a;
 		int                a_s = sizeof(a);
@@ -874,14 +866,59 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		}
 	} else {
 		/* serial I/O */
-		if ( (sd = open(ttyName, O_RDWR)) < 0 ) {
-			msg = "opening tty";
-			goto cleanup;
+#if 0	/* THIS DOESN'T WORK (reason unknown; anyways; we need a bidirectional stream) */
+		if ( !strcmp(ttyName, "-") ) {
+			/* special case: stdio */
+			if ( (sd = dup(fileno(stdout))) < 0 ) {
+				msg = "dup(fileno(stdout))";
+				goto cleanup;
+			}
+			/* only do a single session */
+			initialized = 0;
+		} else
+#endif
+		{
+			/* workaround; a deadlock seems to occur if we reopen the console device
+			 * while printing is still in progress :-(
+			 */
+			fflush(stderr); tcdrain(fileno(stderr));
+			fflush(stdout);	tcdrain(fileno(stdout));
+			if ( (sd = open(ttyName, O_RDWR)) < 0 ) {
+				msg = "opening tty";
+				goto cleanup;
+			}
 		}
-		/* no need for saving attributes - defaults are restored on fd close */
-		if ( setup_term(sd) ) {
-			close(sd);
-			goto cleanup;
+
+		if ( !oldatts ) {
+			struct stat *s1 = 0,*s2 = 0;
+			/* check if stdio and our tty are the same device */
+			if ( !(s1=malloc(sizeof(*s1))) || !(s2=malloc(sizeof(*s2))) ) {
+				msg = "no memory for allocating struct stat";
+				free(s1);
+				free(s2);
+				close(sd);
+				goto cleanup;
+			}
+
+			if ( !fstat(fileno(stderr),s1) && !fstat(sd,s2) && s1->st_dev == s2->st_dev ) {
+				/* indeed; need to silence messages */
+				old_msg_lvl = rtems_remote_debug;
+				rtems_remote_debug = 0;
+			}
+
+			free(s1); free(s2);
+
+			if ( !( oldatts = malloc(sizeof(*oldatts)) ) ) {
+				msg = "no memory for allocating struct termios";
+				close(sd);
+				goto cleanup;
+			}
+			if ( setup_term(sd, oldatts) ) {
+				free(oldatts);
+				oldatts = 0;
+				close(sd);
+				goto cleanup;
+			}
 		}
 	}
 
@@ -901,9 +938,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
     remcomOutBuffer[0] = 0;
 
-	if ( rtems_remote_debug & DEBUG_COMM ) {
-		printf("Got packet '%s' \n", ptr);
-	}
+	DBGMSG(DEBUG_COMM, "Got packet '%s' \n", ptr);
 
 	if ( current || unAttachedCmd(*ptr) ) {
 
@@ -925,6 +960,11 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	case 'D':
       strcpy(remcomOutBuffer,"OK");
 	  putpacket(remcomOutBuffer);
+	  /* signal successful termination of foreground session */
+	  if ( foreground ) {
+		foreground  = 1;
+		sleep(5);	/* so they can switch the terminal from gdb to minicom */
+	  }
 	  goto release_connection;
 
 	case 'g':		/* read registers */
@@ -949,9 +989,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
     case 'H':
       {
 		tid = strtol(ptr+1,0,16);
-		if ( rtems_remote_debug & DEBUG_SCHED ) {
-			printf("New 'H%c' thread id set: 0x%08x\n",*ptr,tid);
-		}
+		DBGMSG(DEBUG_SCHED, "New 'H%c' thread id set: 0x%08x\n",*ptr,tid);
 	  	if ( 'c' == *ptr ) {
 			/* We actually have slightly different semantics.
 			 * In our case, this TID tells us whether we break
@@ -1290,15 +1328,43 @@ rtems_gdb_daemon (rtems_task_argument arg)
       /* reply to the request */
       if (putpacket (remcomOutBuffer))
 		goto release_connection;
-  } /* interpreter loop */
-release_connection:
-  /* make sure attached thread continues */
-  cleanup_connection();
+	} /* interpreter loop */
 
+release_connection:
+	/* make sure attached thread continues */
+	DBGMSG(DEBUG_SCHED, "Releasing connection\n");
+
+	detach_all_tasks();
+
+	if ( rtems_gdb_strm ) {
+		if ( oldatts ) {
+			/* restore terminal attributes in case we share the console */
+			tcsetattr(fileno(rtems_gdb_strm), TCSANOW, oldatts);
+			free(oldatts);
+			oldatts = 0;
+		}
+		fclose( rtems_gdb_strm );
+		rtems_gdb_strm = 0;
+	}
+	if ( old_msg_lvl ) {
+		rtems_remote_debug = old_msg_lvl;
+		old_msg_lvl = 0;
+	}
   }
 
 /* shutdown */
 cleanup:
+  /* do we need to restore terminal attributes ? */
+  if ( oldatts ) {
+	if ( rtems_gdb_strm )
+		tcsetattr(fileno(rtems_gdb_strm), TCSANOW, oldatts);
+    free(oldatts);
+	oldatts = 0;
+  }
+  if ( old_msg_lvl ) {
+	rtems_remote_debug = old_msg_lvl;
+	old_msg_lvl = 0;
+  }
   if ( msg )
 	ERRMSG("GDB daemon - %s: %s\n", msg, strerror(errno));
   INFMSG("GDB daemon: shutting down\n");
@@ -1333,7 +1399,8 @@ cleanup:
 	free(current);
 
   rtems_gdb_tid=0;
-  rtems_task_delete(RTEMS_SELF);
+  if ( !foreground )
+  	rtems_task_delete(RTEMS_SELF);
 }
 
 /* This function will generate a breakpoint exception.  It is used at the
@@ -1433,11 +1500,35 @@ unsigned ticks_per_sec;
 	wait_ticks  = ticks_per_sec * poll_ms;
 	wait_ticks /= 1000;
 
-	rtems_gdb_tid = rtems_gdb_thread_helper("GDBd", pri, 20000+RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, (rtems_task_argument)ttyName);
+#if 0	/* cloning stdio doesn't work properly */
+	if ( ttyName && !strcmp(ttyName, "-") )
+#else
+	if ( pri < 0 )
+#endif
+	{
+		/* run in foreground */
+		if ( !isatty(fileno(stdout)) ) {
+			fprintf(stderr,"<stdout> is not a terminal; cannot run in foreground!\n");
+			return -1;
+		}
+		if ( ttyName ) {
+			fprintf(stderr,"Warning: ttyName argument not used on foreground mode\n");
+		}
+		if ( !(ttyName = ttyname(fileno(stdout))) ) {
+			perror("Unable to obtain ttyname(fileno(stdout))");
+			return -1;
+		}
+		rtems_task_ident(RTEMS_SELF, RTEMS_LOCAL, (rtems_id*)&rtems_gdb_tid);
+		foreground = -1;
+		rtems_gdb_daemon((rtems_task_argument)ttyName);
+	} else {
+		foreground = 0;
+		rtems_gdb_tid = rtems_gdb_thread_helper("GDBd", pri, 20000+RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, (rtems_task_argument)ttyName);
+	}
 #ifdef DEBUG_SECOND_THREAD
 	blah_tid = rtems_gdb_thread_helper("blah", 200, RTEMS_MINIMUM_STACK_SIZE, blah, 0);
 #endif
-	return !rtems_gdb_tid;
+	return foreground ? foreground < 0 : !rtems_gdb_tid;
 }
 
 int
@@ -1563,8 +1654,7 @@ rtems_status_code sc = -1;
 static RtemsDebugMsg
 task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 {
-	if ( rtems_remote_debug & DEBUG_SCHED )
-		printf("SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
+	DBGMSG(DEBUG_SCHED, "SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
 
 	assert( new_tid );
 

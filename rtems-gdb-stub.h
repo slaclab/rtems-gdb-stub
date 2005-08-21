@@ -56,13 +56,13 @@ extern volatile int rtems_remote_debug;
 #ifdef DEBUGGING_ENABLED
 /* debug messages check appropriate debug facility */
 #define DBGMSG(facility, fmt...)	\
-	do {
+	do {							\
 		if ( rtems_remote_debug & (facility) ) \
 			fprintf(stderr,fmt);	\
 	} while (0)
 
 #define KDBGMSG(facility, fmt...)	\
-	do {
+	do {							\
 		if ( rtems_remote_debug & (facility) ) \
 			printk(fmt);	\
 	} while (0)
