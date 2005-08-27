@@ -280,27 +280,28 @@ target: & (optional) libbspExt $>=$ version 1.3\\
 	be resumed.
 
 \subsubsection{Sharing the Console Serial Line}
-	If a priority less than zero is passed to {\verb rtems_gdb_start()}
+	If a priority less than zero is passed to {\verb|rtems_gdb_start()|}
     the agent is executed in the context of the the caller, i.e.,
     no separate task is created. Thus, the agent may be run from
     a shell (e.g., ``Cexp'') and takes over the console line for
     the duration of the session, i.e., until the \cmd{detach}
-    command is issued from GDB. In this, ``foreground'' mode
+    command is issued from GDB. In this ``foreground'' mode
     of operation, the agent terminates after a the session is ended
-    returning control to the caller of {\verb rtems_gdb_start()}.
+    returning control to the caller of {\verb|rtems_gdb_start()|}.
 
 	A sample session example:
 \begin{verbatim}
-	Cexp>rtems_gdb_start(-1,0)
-	GDB Daemon starting
-	.y	(scrambled output since terminal mode changed)
+	    Cexp>rtems_gdb_start(-1,0)
+	    GDB Daemon starting
+	< scrambled output since terminal mode changed >
+	    .y
 	< exit from terminal program and start gdb >
-	(gdb) target rtems-remote </dev/ttySxx>
-	(gdb) <session commands>
-	(gdb) detach
-	(gdb) quit
-	< restart terminal program and resume Cexp session>
-	Cexp>
+	    (gdb) target rtems-remote < /dev/ttySxx >
+	    (gdb)    < session commands >
+	    (gdb) detach
+	    (gdb) quit
+	< restart terminal program and resume Cexp session >
+	    Cexp>
 \end{verbatim}
 
 \subsection{Switching Thread Context}

@@ -1794,6 +1794,7 @@ int rtems_gdb_notify_and_suspend(RtemsDebugMsg msg)
 
 	if ( msg->tid == rtems_gdb_tid ) {
 		if (rtems_gdb_handle_exception) {
+			msg->contSig = SIGCONT;
 			rtems_gdb_tgt_set_pc(msg, (unsigned long)rtems_gdb_handle_exception);
 			return 0;
 		}
