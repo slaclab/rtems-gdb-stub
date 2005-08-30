@@ -144,8 +144,9 @@ ${RTEMS_SITE_INSTALLDIR}/$(RTEMS_BSP)/bin :
 #  - Some BSPs might generate bootable executables in yet another
 #    format (such as .srec) and you might need to extend the rule
 #    below so the essential files get installed. YMMV.
-install:  all $(RTEMS_SITE_INSTALLDIR)/bin docinst
+install:  all $(RTEMS_SITE_INSTALLDIR)/bin docinst $(RTEMS_SITE_INSTALLDIR)/lib
 	$(INSTALL_VARIANT) -m 555 ${PGMS} ${PGMS:%.exe=%.bin} ${PGMS:%.exe=%.sym} ${RTEMS_SITE_INSTALLDIR}/bin
+	$(INSTALL_VARIANT) -m 644 ${LIB} ${RTEMS_SITE_INSTALLDIR}/lib
 
 doc: rtems-gdb-stub.pdf
 
