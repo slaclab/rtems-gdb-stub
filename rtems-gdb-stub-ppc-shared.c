@@ -31,8 +31,8 @@
 #define CR___OFF  (32*4+32*8+4*2)
 #define LR___OFF  (32*4+32*8+4*3)
 #define CTR__OFF  (32*4+32*8+4*4)
-#define XER__OFF  (32*4+32*8+4*6)
-#define FPSCR_OFF (32*4+32*8+4*7)
+#define XER__OFF  (32*4+32*8+4*5)
+#define FPSCR_OFF (32*4+32*8+4*6)
 
 typedef struct BpntRec_ *Bpnt;
 
