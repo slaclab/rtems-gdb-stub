@@ -838,7 +838,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		goto cleanup;
   }
 
-  INFMSG("GDB daemon: starting up\n\n");
+  INFMSG("GDB daemon (Release $Name$): starting up\n\n");
 
   for ( initialized = 1; initialized; foreground ? initialized = 0 : 0) {
 
