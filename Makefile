@@ -96,7 +96,7 @@ LDFLAGS   +=
 #  'make clobber' already includes 'make clean'
 #
 
-CLEAN_ADDITIONS += *.out *.toc *.aux *.log
+CLEAN_ADDITIONS += *.out *.toc *.aux *.log html
 CLOBBER_ADDITIONS += *.pdf
 
 all:	${HCHECK} ${ARCH} $(SRCS) $(PGMS) $(LIB)
@@ -160,13 +160,20 @@ $(RTEMS_SITE_DOCDIR)/gdb/rtems-gdb-stub.pdf: rtems-gdb-stub.pdf
 	@mkdir -p $(RTEMS_SITE_DOCDIR)/gdb
 	$(INSTALL_CHANGE) $^ $@
 
+define make-html
+	@mkdir -p $(shell dirname $@)
+	latex2html -split 4 -dir $(shell dirname $@) rtems-gdb-stub
+endef
+
 $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub/index.html: rtems-gdb-stub.tex
-	@mkdir -p $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub
-	latex2html -split 4 -dir $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub rtems-gdb-stub
+	$(make-html)
+
+html/index.html: rtems-gdb-stub.tex
+	$(make-html)
 
 REVISION=$(filter-out $$%,$$Name$$)
 
-tar:
+tar: doc html/index.html
 	@$(make-tar)
 
 ifdef HCHECK
