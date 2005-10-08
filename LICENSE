@@ -12,17 +12,15 @@
 
        rtems-gdb-stub is distributed subject to the following license conditions:
 
-       NOTE This license applies only to rtems-gdb-stub itself and _NOT_ to the
-            libraries (found in the binutils, libtecla, regexp and
-            libelf subdirectories) who are distributed with rtems-gdb-stub for
+       NOTE This license applies only to rtems-gdb-stub itself and _NOT_ to any
+            libraries which may be distributed with rtems-gdb-stub for
             convenience. If you decide to use one of those libraries
             you must read and agree to their respective licensing
             conditions)
 
 
          SOFTWARE LICENSE AGREEMENT
-         Software: rtems-gdb-stub - C-expression interpreter and runtime object
-                   loader/linker
+         Software: rtems-gdb-stub - GDB stub for RTEMS
 
           1. The "Software", below, refers to rtems-gdb-stub (in either source
              code, or binary form and accompanying documentation).  Each
