@@ -336,8 +336,8 @@ int rval = toupper(ch);
 }
 
 /* scan for the sequence $<data>#<checksum>     */
-STATIC unsigned char *
-getpacket(unsigned char *buf)
+STATIC char *
+getpacket(char *buf)
 {
 unsigned char	chks, xchks;
 int				n,ch = 0;
@@ -398,7 +398,7 @@ register unsigned char chks, *pch;
 register int           i;
 	do {
 		putDebugChar('$');
-		for ( chks=0, pch=buf; *pch; pch++ ) {
+		for ( chks=0, pch=(unsigned char*)buf; *pch; pch++ ) {
 			putDebugChar(*pch);
 			chks += *pch;
 		}
@@ -417,7 +417,7 @@ register int           i;
    return pointer to terminating NULL */
 
 STATIC char *
-mem2hex(char *mem, char *buf, int len)
+mem2hex(unsigned char *mem, char *buf, int len)
 {
 register unsigned char ch;
 	while (len-- > 0) {
@@ -433,8 +433,8 @@ register unsigned char ch;
  * after the last one written
  */
 
-STATIC char *
-hex2mem(char *buf, char *mem, int len)
+STATIC unsigned char *
+hex2mem(char *buf, unsigned char *mem, int len)
 {
 	while (len--) {
 		*mem    = (hex(*buf++) << 4);
@@ -650,14 +650,21 @@ int               pri   = 0, i = 0;
 			Objects_Information *oi;
 			oi = _Objects_Get_information( tid );
 			*extrabuf = '\'';
+#if 0 /* 4.6.99 _Objects_Copy_name_string has a 3rd 'length' argument... */
 			if ( oi->is_string ) {
 				if ( oi->name_length < EXTRABUFSZ ) {
 					_Objects_Copy_name_string( thr->Object.name, extrabuf + 1  );
 				} else {
 					strcpy( extrabuf + 1, "NAME TOO LONG" ); 
 				}
-			} else {
-				_Objects_Copy_name_raw( &thr->Object.name, extrabuf + 1, oi->name_length );
+			} else
+#endif
+			{
+				if ( oi->name_length < EXTRABUFSZ ) {
+					_Objects_Copy_name_raw( &thr->Object.name, extrabuf + 1, oi->name_length );
+				} else {
+					strcpy( extrabuf + 1, "NAME TOO LONG" ); 
+				}
 #if   CPU_BIG_ENDIAN    == TRUE
 #elif CPU_LITTLE_ENDIAN == TRUE
 				{ char *b, *e, c;
@@ -768,7 +775,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 {
   char				*ttyName = (char*)arg;
   char              *ptr, *pto;
-  char              *chrbuf = 0;
+  unsigned char     *chrbuf = 0;
   int               sd,regno,i,j;
   RtemsDebugMsg     current = 0;
   rtems_status_code sc;
@@ -854,7 +861,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	/* startup / initialization */
 	if ( !ttyName ) {
 		struct sockaddr_in a;
-		int                a_s = sizeof(a);
+		socklen_t          a_s = sizeof(a);
 		if ( (sd = accept(rtems_gdb_sd, (struct sockaddr *)&a, &a_s)) < 0 ) {
 			msg = "accept";
 			goto cleanup;
@@ -971,13 +978,13 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	  if (!havestate(current))
 		break;
 	  rtems_gdb_tgt_f2r(chrbuf, current);
-	  mem2hex ((char *) chrbuf, remcomOutBuffer, NUMREGBYTES);
+	  mem2hex (chrbuf, remcomOutBuffer, NUMREGBYTES);
 	  break;
 
 	case 'G':		/* set registers and return OK */
 	  if (!havestate(current))
 		break;
-	  hex2mem (ptr, (char *) chrbuf, NUMREGBYTES);
+	  hex2mem (ptr, chrbuf, NUMREGBYTES);
 	  rtems_gdb_tgt_r2f(current, chrbuf);
 	  strcpy (remcomOutBuffer, "OK");
 	  break;
@@ -1028,7 +1035,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		if (setjmp (remcomEnv) == 0) {
 			rtems_gdb_handle_exception = dolj;
 			/* Try to read */
-			mem2hex ((char *) addr, remcomOutBuffer, len);
+			mem2hex ( (unsigned char*)addr, remcomOutBuffer, len);
 		} else {
 			strcpy (remcomOutBuffer, "E03");
 			ERRMSG("bus error\n");
@@ -1048,7 +1055,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		if (setjmp (remcomEnv) == 0) {
 			rtems_gdb_handle_exception = dolj;
 			/* Try to write */
-			hex2mem (ptr, (char *) addr, len);
+			hex2mem (ptr, (unsigned char *) addr, len);
 			strcpy (remcomOutBuffer, "OK");
 		} else {
 	      strcpy (remcomOutBuffer, "E03");
@@ -1116,8 +1123,8 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		  || (i = rtems_gdb_tgt_regoff(regno, &j)) < 0 )
 		break;
 		
-	  rtems_gdb_tgt_f2r((char*)chrbuf,current);
-	  hex2mem (ptr, ((char*)chrbuf) + j, i);
+	  rtems_gdb_tgt_f2r( chrbuf,current);
+	  hex2mem (ptr, chrbuf + j, i);
 	  rtems_gdb_tgt_r2f(current, chrbuf);
 	  strcpy (remcomOutBuffer, "OK");
 	  break;
@@ -1134,7 +1141,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			if ( 0 == setjmp(remcomEnv) ) {
 				rtems_gdb_handle_exception = dolj;
 				/* try to compute crc */
-				sprintf(remcomOutBuffer,"C%x",(unsigned)crc32((char*)addr, len, -1));
+				sprintf(remcomOutBuffer,"C%x",(unsigned)crc32((unsigned char*)addr, len, -1));
 			} else {
 	      		strcpy (remcomOutBuffer, "E03");
 	      		ERRMSG("bus error\n");
@@ -1162,9 +1169,9 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		ptr+=15;
 		if ( ','== *ptr ) {
 			tid = strtol(++ptr,0,16);
-			i = compileThreadExtraInfo(chrbuf, tid);
+			i = compileThreadExtraInfo((char*)chrbuf, tid);
 			if (*chrbuf)
-	  			mem2hex (chrbuf, remcomOutBuffer, i+1);
+	  			mem2hex ( chrbuf, remcomOutBuffer, i+1 );
 		}
 	  }
 #ifdef HAVE_CEXP
@@ -1278,7 +1285,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			for ( i=0; i<len; i++ ) {
 				if ( 0x7d == *ptr )
 					*++ptr ^= 0x20;
-				((volatile char*)addr)[i] = *((volatile char*)ptr)++;
+				((volatile char*)addr)[i] = *((volatile char*)ptr++);
 			}
 			strcpy(remcomOutBuffer,"OK");
 		} else {
