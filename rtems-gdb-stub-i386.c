@@ -213,6 +213,19 @@ unsigned long	val;
 
 static void (*origHandler)()=0;
 
+void
+rtems_gdb_tbt_dump_frame(RtemsDebugFrame f)
+{
+	printk("Exception vector #0x%x; Registers:\n",f->idtIndex);
+	printk("EAX: 0x%08x, EBX: 0x%08x, ECX: 0x%08x, EDX: 0x%08x\n",
+		f->eax, f->ebx, f->ecx, f->edx);
+	printk("ESP: 0x%08x, EBP: 0x%08x, ESI: 0x%08x, EDI: 0x%08x\n",
+		f->esp0 + 5*4 /* exception frame */,
+		f->ebp, f->esi, f->edi);
+	printk("EIP/PC: 0x%08x; EFLAGS: 0x%08x\n",
+		f->eip, f->eflags);
+}
+
 static void
 exception_handler(RtemsDebugFrame f)
 {

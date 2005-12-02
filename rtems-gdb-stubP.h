@@ -61,7 +61,7 @@ rtems_gdb_tgt_insdel_breakpoint(int doins, int addr, int len);
 void
 rtems_gdb_tgt_remove_all_bpnts(void);
 
-/* announce that a frame-less thread should be single-stepped.
+/* Announce that a frame-less thread should be single-stepped.
  * We need lowlevel support for this, e.g., to enable a
  * single step exception in the TCB
  *
@@ -70,6 +70,13 @@ rtems_gdb_tgt_remove_all_bpnts(void);
  */
 int
 rtems_gdb_tgt_single_step(RtemsDebugMsg msg);
+
+/* Dump exception frame contents for info to the console;
+ * this routine is executed from exception context, i.e., it
+ * must use 'printk'.
+ */
+void
+rtems_gdb_tgt_dump_frame(RtemsDebugFrame frm);
 
 /* Generic (architecture independent) routines */
 

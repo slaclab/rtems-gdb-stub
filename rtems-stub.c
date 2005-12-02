@@ -1828,6 +1828,8 @@ int rtems_gdb_notify_and_suspend(RtemsDebugMsg msg)
 		else
 			printk(" %i",msg->sig);
 		printk(") caught; Task 0x%08x killed (suspended) -- use GDB\n", msg->tid);
+		if ( msg->frm )
+			rtems_gdb_tgt_dump_frame(msg->frm);
 	}
 #endif
 

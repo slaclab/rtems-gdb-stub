@@ -10,6 +10,7 @@
 
 #include <libcpu/raw_exception.h> 
 #include <libcpu/spr.h> 
+#include <libcpu/stackTrace.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -180,6 +181,38 @@ Thread_Control *tcb = 0;
 
 }
 
+typedef struct PPC_Frame_ {
+	struct PPC_Frame_ *up;
+	void			  *lr;
+} *PPC_Frame;
+
+void
+rtems_gdb_tgt_dump_frame(BSP_Exception_frame *f)
+{
+int		  i;
+PPC_Frame p;
+	/* rely on layout of BSP_Exception_Frame */
+	printk("PPC Exception vector #0x%x\nRegister Contents:", f->_EXC_number);
+	for ( i=0; i<32; i++ ) {
+		if ( i%4 == 0 )
+			printk("\n");
+		printk("\tGPR%02d: 0x%08x",i,*(&f->GPR0 + i));
+	}
+	printk("\nMSR: 0x%08x; CTR: 0x%08x; CR: 0x%08x; XER: 0x%08x\n",
+		f->EXC_SRR1, f->EXC_CTR, f->EXC_CR, f->EXC_XER);
+	printk("\nPC: 0x%08x; LR: 0x%08x\n",
+		f->EXC_SRR0, f->EXC_LR);
+	if ( ( p = (PPC_Frame)f->GPR1 ) ) {
+		printk("Stack trace:");
+		for (i=0; (p=p->up) && i<50; i++) {
+			if ( i%4 == 0 )
+				printk("\n");
+			printk("-> 0x%08x",p->lr);
+		}
+		printk("\n");
+	}
+}
+
 static inline int
 exception_handler(BSP_Exception_frame *f, void *unused)
 {
@@ -202,7 +235,7 @@ RtemsDebugMsgRec msg;
 
 	/* the debugger should be able to handle its own exceptions */
 	msg.frm = f;
-    msg.sig = SIGHUP;
+	msg.sig = SIGHUP;
 
 	switch ( f->_EXC_number ) {
 		case ASM_MACH_VECTOR     :
@@ -213,6 +246,9 @@ RtemsDebugMsgRec msg;
 		case ASM_PROT_VECTOR     :
 		case ASM_ISI_VECTOR      :
 		case ASM_ALIGN_VECTOR    :  
+		case ASM_IMISS_VECTOR    :
+		case ASM_DLMISS_VECTOR   :
+		case ASM_DSMISS_VECTOR   :
 			msg.sig = SIGSEGV;
 		break;
 
@@ -271,7 +307,7 @@ RtemsDebugMsgRec msg;
 
 		default: break;
 	}
-    if (f->EXC_SRR1 & MSR_FP) {
+	if (f->EXC_SRR1 & MSR_FP) {
 		/* thread dispatching is _not_ disabled at this point; hence
 		 * we must make sure we have the FPU enabled...
 		 * original MSR will be restored anyways.
