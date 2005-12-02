@@ -1,0 +1,18 @@
+Changes since release 1.0:
+  T.S: 2005/12/1:
+  - added arch specific routines to dump register/stack contents
+    when a thread crashes.
+  - removed 'obsolete i/o'.
+  - bugfix: when re-attaching to a dead task, list corruption had
+    occurred (eventual assertion failure). E.g., if thread 3 ran
+    into a segmentation violation then a 't 3, cont, Ctrl-C, t 3'
+    sequence would trigger the behavior).
+  - a few documentation fixes.
+  - updated GDB patches; added patch for gdb-6.3.
+  T.S: 2005/11/13:
+  - silenced compiler warnings by explicitely casting signed/unsigned
+    char types where necessary.
+  - bugfix in 'binary memory write [X]': had incremented (*ptr)++
+    instead of *(ptr++).
+  - abandoned use of _Objects_Copy_name_string() (API changed in 4.6.99;
+    to be compatible, we always use _Objects_Copy_name_raw()).
