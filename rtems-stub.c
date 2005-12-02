@@ -1447,6 +1447,10 @@ rtems_id          rval = 0;
 			pri,
 			stack,
 			RTEMS_DEFAULT_MODES,
+			/* Making this a FP task ensures that the debuggee's FP regs
+			 * are always saved in the context; even under a 'lazy FP
+			 * context switching' strategy.
+			 */
 			RTEMS_LOCAL | RTEMS_FLOATING_POINT,
 			&rval);
 	if ( RTEMS_SUCCESSFUL != sc ) {
@@ -1698,6 +1702,7 @@ task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 						cur = t;
 						break;
 					} else if ( ( t = threadOnListBwd(&cemetery, new_tid) ) ) {
+						cdll_remove_el(&t->node);
 						cur = t;
 						break;
 					} else if ( ( t = threadOnListBwd(&stopped, new_tid) ) ) {
@@ -1738,6 +1743,7 @@ task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 	}
 	/* add to head */
 	DBGMSG(DEBUG_SLIST, "stopped list: adding %x at head\n", cur->tid);
+	assert( cur->node.p == &cur->node && cur->node.n == &cur->node );
 	cdll_splerge_head(&stopped, (CdllNode)cur);
 return cur;
 }
@@ -1766,6 +1772,8 @@ static void post_and_suspend(RtemsDebugMsg msg)
 	 */
 	while (1) {
 		rtems_task_suspend( msg->tid );
+
+		assert( !rtems_gdb_thread_is_dead(msg) );
 	
 		if ( msg->node.n != &msg->node || msg->node.p != &msg->node ) {
 			KERRMSG("GDB daemon (from exception handler) FATAL ERROR: message still on a list???\n");
