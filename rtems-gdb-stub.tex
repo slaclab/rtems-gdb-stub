@@ -107,15 +107,18 @@ as small and as modular as possible.
 \begin{itemize}
 \item
  A small patch is needed to fix a bug [has been submitted
+ as GDB bug \#2029
  but to-date, I don't know if it has been merged] in the
  powerpc stack unwinding.
 \item
  A small patch is needed to make it possible to obtain
- the list of target tasks without interrupting them all
+ the list of tasks running on the target without interrupting
+ and stopping them all
  (which would result in violating design goal \#1: only
  interrupt tasks on request [explicit or breakpoint]).
 \item
- Additional patch adds a new gdb target with protocol
+ Additional patch adds a new gdb target (``\cmd{rtems-remote}'')
+ with protocol
  extentions to support loadable modules (CEXP). Note that
  the stub works fine without CEXP, however.
 \end{itemize}
@@ -138,7 +141,7 @@ target: & (optional) libbspExt $>=$ version 1.3\\
 
 \begin{itemize}
 \item
-  Change directory to gdb source topdir, create a build
+  Change directory to the gdb source topdir, create a build
   subdirectory (name of your choice), chdir there and configure
   (besides `powerpc', the `i386' CPU is supported and the
   cross-debugger may be configured accordingly):
@@ -178,8 +181,14 @@ target: & (optional) libbspExt $>=$ version 1.3\\
 
 \subsection{Prerequisites}
 \subsubsection*{Compilation}
-	Code to be debugged must be compiled with the `-g' option.
-    (preferrably everything).
+	Code to be debugged must be compiled with the `{\tt -g}' option.
+    (preferrably everything)%
+\footnote{Until recently, `{\tt -g}' was implicitely set when building
+RTEMS proper. Unfortunately, this (late Nov. '05) no longer seems to be
+the case. I found that passing `\mbox{\tt RTEMS\_CFLAGS=-g}' on the command
+line to the \cmd{configure} script when building RTEMS did the job. I
+don't know if this is the recommended way, though. YMMV.
+}.
 
 	Optimization Caveat: It is possible to use GDB with optimized
 	code (I do it all the time) but this may change the flow
@@ -223,7 +232,7 @@ target: & (optional) libbspExt $>=$ version 1.3\\
 
 	GDB also features a \cmd{load} command to instruct the target
 	computer to load/link object modules. Since the target
-	computer usually sees directory tree that is different
+	computer usually sees a directory tree that is different
 	from the host, any path information is discarded from the
 	\cmd{load} argument -- instead, the target's {\tt PATH} environment
 	variable must contain the directory where the target can
@@ -286,7 +295,7 @@ target: & (optional) libbspExt $>=$ version 1.3\\
 	If a priority less than zero is passed to {\verb|rtems_gdb_start()|}
     the agent is executed in the context of the the caller, i.e.,
     no separate task is created. Thus, the agent may be run from
-    a shell (e.g., ``Cexp'') and takes over the console line for
+    a shell (e.g., ``Cexp'') and take over the console line for
     the duration of the session, i.e., until the \cmd{detach}
     command is issued from GDB. In this ``foreground'' mode
     of operation, the agent terminates after a the session is ended
@@ -319,7 +328,8 @@ target: & (optional) libbspExt $>=$ version 1.3\\
 
 	Once stopped, a thread remains suspended until you
 	issue the \cmd{continue} command or \cmd{detach} (terminate
-	the session). Either of those operations lets all threads resume.
+	the session). Either of those operations lets all stopped
+	threads resume.
 
 	You can hit \cmd{$<$Ctrl$>$-C} to interrupt the target; this
 	only interrupts the `dummy'/`helper' thread and
@@ -331,7 +341,7 @@ target: & (optional) libbspExt $>=$ version 1.3\\
 	registers etc. everyone else continues normally
 \begin{verbatim}
 		info threads
-		t  14            //switch to thread ID 14
+		t 14             //switch to thread ID 14
 \end{verbatim}
 	Thread 14 is stopped. The helper remains stopped. Inspect
 	T14's registers + stack
@@ -339,6 +349,10 @@ target: & (optional) libbspExt $>=$ version 1.3\\
 		t 12             //switch to thread ID 12
 \end{verbatim}
 	helper, T14 and T12 are stopped; inspect T12's registers + stack
+\begin{verbatim}
+		t 14             //switch back to thread ID 14
+\end{verbatim}
+	helper, T14 and T12 remain stopped; inspect T14's registers + stack
 \begin{verbatim}
 		cont             //resume everything
 \end{verbatim}
@@ -350,14 +364,14 @@ target: & (optional) libbspExt $>=$ version 1.3\\
 	after connection was established.
 
 \subsection{Executing Subroutines on the Target}
-When evaluating expressions at the \tt{(gdb)} command line (e.g., within
-a \tt{call} or \tt{print} command) gdb may need to execute a subroutine
+When evaluating expressions at the \cmd{(gdb)} command line (e.g., within
+a \cmd{call} or \cmd{print} command) gdb may need to execute a subroutine
 on the target. For example,
 \begin{verbatim}
 		(gdb) print printf("Hello\n")
 \end{verbatim}
-invokes the \tt{printf} routine on the target, retrieves the return value
-and prints it to the \tt{gdb} console.
+invokes the \cmd{printf} routine on the target, retrieves the return value
+and prints it to the \cmd{gdb} console.
 
 This is actually a pretty complex operation involving creating a dummy stack
 frame and appropriate arguments etc. on the target. Some targets' exception
