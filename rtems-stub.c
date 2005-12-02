@@ -273,12 +273,6 @@ STATIC char remcomOutBuffer[BUFMAX];
 		}				\
 	}  while (0)
 
-#ifdef OBSOLETE_IO
-#include "obsolete_io.c"
-#  define hex2int hexToInt
-#  define getpacket(buf) getpacket()
-#else
-
 /* setup raw terminal; return old flags in *olda (if non-null)
  *
  * RETURNS: 0 on success; -1 on error.
@@ -456,8 +450,6 @@ register unsigned char ch;
 	*pval = val;
 	return n;
 }
-
-#endif /* OBSOLETE_IO */
 
 /* integer to BE hex; buffer must be large enough */
 STATIC char *
