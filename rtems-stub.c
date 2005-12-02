@@ -861,7 +861,8 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	/* startup / initialization */
 	if ( !ttyName ) {
 		struct sockaddr_in a;
-		socklen_t          a_s = sizeof(a);
+		/* FIXME: should use socklen_t but older (4.6.2) RTEMS doesn't have it */
+		unsigned           a_s = sizeof(a);
 		if ( (sd = accept(rtems_gdb_sd, (struct sockaddr *)&a, &a_s)) < 0 ) {
 			msg = "accept";
 			goto cleanup;
