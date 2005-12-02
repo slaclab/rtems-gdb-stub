@@ -33,7 +33,7 @@ and execute
 
 (It is always a good idea to try '--dry-run' first)
 
-   Till Straumann, 7/2005
+   Till Straumann, 12/2005
 
 Index: gdb/Makefile.in
 ===================================================================
@@ -298,10 +298,10 @@ Index: gdb/remote-rtems.c
 RCS file: gdb/remote-rtems.c
 diff -N gdb/remote-rtems.c
 *** /dev/null	1 Jan 1970 00:00:00 -0000
---- gdb/remote-rtems.c	15 Mar 2005 03:30:20 -0000	1.3
+--- gdb/remote-rtems.c	30 Nov 2005 20:28:51 -0000	1.5
 ***************
 *** 0 ****
---- 1,615 ----
+--- 1,616 ----
 + static char ** remote_file_list(void);
 + static struct section_addr_info *remote_section_list(char *);
 + static void    init_rtems_ops(void);
@@ -449,7 +449,7 @@ diff -N gdb/remote-rtems.c
 + 		error("No '.text' section found in executable");
 + 	  }
 + 	  if ( compare_section ( 0, exec_bfd, s ) )
-+ 		error("%s: '.text' section of executable file doesn't match the target's -- do GDB and the target use the same file?", bfd_get_filename(exec_bfd));
++ 		warning("%s: '.text' section of executable file doesn't match the target's -- do GDB and the target use the same file?", bfd_get_filename(exec_bfd));
 + 	}
 +   add_remote_objfiles(0,from_tty);
 + }
@@ -640,11 +640,12 @@ diff -N gdb/remote-rtems.c
 + 	printf_filtered ("Target files:\n");
 +   for ( i=0; fl && fl[i]; i++ )
 + 	{
-+ 	  if (remote_debug)
-+ 	    printf_filtered ("  %-40sSection Info:\n",fl[i]);	
 + 	  struct cleanup *cln1 = 0;
 + 	  struct objfile *of;
 + 	  bfd            *sbfd;
++ 
++ 	  if (remote_debug)
++ 	    printf_filtered ("  %-40sSection Info:\n",fl[i]);	
 + 
 + 	  if ( (sbfd = caught_symfile_bfd_open(fl[i])) )
 + 		{
@@ -921,10 +922,9 @@ Index: gdb/remote.c
 ===================================================================
 RCS file: /afs/slac/g/spear/cvsrep/tools/gdb/gdb/remote.c,v
 retrieving revision 1.1.1.1
-retrieving revision 1.4
-diff -c -r1.1.1.1 -r1.4
+diff -c -r1.1.1.1 remote.c
 *** gdb/remote.c	10 Nov 2004 18:25:48 -0000	1.1.1.1
---- gdb/remote.c	15 Mar 2005 02:12:03 -0000	1.4
+--- gdb/remote.c	28 Sep 2005 20:52:49 -0000
 ***************
 *** 3192,3197 ****
 --- 3192,3199 ----
@@ -970,10 +970,50 @@ Index: gdb/rs6000-tdep.c
 ===================================================================
 RCS file: /afs/slac/g/spear/cvsrep/tools/gdb/gdb/rs6000-tdep.c,v
 retrieving revision 1.1.1.1
-retrieving revision 1.2
-diff -c -r1.1.1.1 -r1.2
+retrieving revision 1.3
+diff -c -r1.1.1.1 -r1.3
 *** gdb/rs6000-tdep.c	10 Nov 2004 18:25:48 -0000	1.1.1.1
---- gdb/rs6000-tdep.c	10 Nov 2004 18:39:09 -0000	1.2
+--- gdb/rs6000-tdep.c	12 Nov 2005 00:43:01 -0000	1.3
+***************
+*** 849,855 ****
+  	  continue;
+  
+  	}
+!       else if (lr_reg != -1 &&
+  	       /* std Rx, NUM(r1) || stdu Rx, NUM(r1) */
+  	       (((op & 0xffff0000) == (lr_reg | 0xf8010000)) ||
+  		/* stw Rx, NUM(r1) */
+--- 849,855 ----
+  	  continue;
+  
+  	}
+!       else if (lr_reg != -1 && fdata->nosavedpc &&
+  	       /* std Rx, NUM(r1) || stdu Rx, NUM(r1) */
+  	       (((op & 0xffff0000) == (lr_reg | 0xf8010000)) ||
+  		/* stw Rx, NUM(r1) */
+***************
+*** 894,900 ****
+  	  continue;
+  
+  	}
+!       else if (op == 0x48000004)
+  	{			/* b .+4 (xlc) */
+  	  break;
+  
+--- 894,906 ----
+  	  continue;
+  
+  	}
+!  	  else if ( (( op & 0xfe80ffff ) == 0x4280004) || (( op & 0xfe80ffff ) == 0x42800005 && lr_reg > -1 ) )
+!  	{			/* bcl .+4 used in -fpic */
+!  	
+!  	  continue;
+!  
+!  	}
+!        else if (op == 0x48000004)
+  	{			/* b .+4 (xlc) */
+  	  break;
+  
 ***************
 *** 1184,1190 ****
   	     the search if we have no valid frame yet or if the return
@@ -983,11 +1023,11 @@ diff -c -r1.1.1.1 -r1.2
   	    break;
   
   	  if (op == 0x4e800020		/* blr */
---- 1184,1190 ----
+--- 1190,1196 ----
   	     the search if we have no valid frame yet or if the return
   	     address is not yet saved in the frame.  */
   	  if (fdata->frameless == 0
-! 	      && (lr_reg != -1 && fdata->nosavedpc == 0))
+! 	      && (fdata->nosavedpc == 0))
   	    break;
   
   	  if (op == 0x4e800020		/* blr */
@@ -1102,6 +1142,12 @@ diff -N gdb/config/m68k/m68k-monitor-ssrlrtems.mt
 + include $(srcdir)/config/m68k/monitor.mt
 + TDEPFILES+= corelow.o core-regset.o m68k-rtemscore.o
 + TM_FILE= tm-m68k-monitor-ssrlrtems.h
+Index: gdb/config/m68k/monitor.mt
+===================================================================
+RCS file: /afs/slac/g/spear/cvsrep/tools/gdb/gdb/config/m68k/monitor.mt,v
+retrieving revision 1.1.1.1
+retrieving revision 1.3
+diff -c -r1.1.1.1 -r1.3
 Index: gdb/config/m68k/tm-m68k-monitor-ssrlrtems.h
 ===================================================================
 RCS file: gdb/config/m68k/tm-m68k-monitor-ssrlrtems.h
@@ -1155,19 +1201,37 @@ diff -N gdb/config/m68k/tm-m68k-monitor-ssrlrtems.h
 + 
 + /* FIXME, should do GET_LONGJMP_TARGET for newlib.  */
 + #endif /* defined TM_M68K_SSRLRTEMS_H */
+Index: gdb/config/m68k/tm-monitor.h
+===================================================================
+RCS file: /afs/slac/g/spear/cvsrep/tools/gdb/gdb/config/m68k/tm-monitor.h,v
+retrieving revision 1.1.1.1
+retrieving revision 1.3
+diff -c -r1.1.1.1 -r1.3
+Index: gdb/config/powerpc/ppc-eabi.mt
+===================================================================
+RCS file: /afs/slac/g/spear/cvsrep/tools/gdb/gdb/config/powerpc/ppc-eabi.mt,v
+retrieving revision 1.1.1.1
+retrieving revision 1.3
+diff -c -r1.1.1.1 -r1.3
 Index: gdb/config/powerpc/ppc-ssrlrtems.mt
 ===================================================================
 RCS file: gdb/config/powerpc/ppc-ssrlrtems.mt
 diff -N gdb/config/powerpc/ppc-ssrlrtems.mt
 *** /dev/null	1 Jan 1970 00:00:00 -0000
---- gdb/config/powerpc/ppc-ssrlrtems.mt	10 Nov 2004 23:12:47 -0000	1.1
+--- gdb/config/powerpc/ppc-ssrlrtems.mt	12 Nov 2005 02:04:18 -0000	1.2
 ***************
 *** 0 ****
 --- 1,4 ----
-+ # Target: PowerPC running eabi
-+ include $(srcdir)/config/powerpc/ppc-eabi.mt
++ # Target: PowerPC running eabi including simulator
++ include $(srcdir)/config/powerpc/ppc-sim.mt
 + TDEPFILES+= corelow.o core-regset.o ppc32-rtemscore.o
 + TM_FILE= tm-ppc-ssrlrtems.h
+Index: gdb/config/powerpc/tm-ppc-eabi.h
+===================================================================
+RCS file: /afs/slac/g/spear/cvsrep/tools/gdb/gdb/config/powerpc/tm-ppc-eabi.h,v
+retrieving revision 1.1.1.1
+retrieving revision 1.3
+diff -c -r1.1.1.1 -r1.3
 Index: gdb/config/powerpc/tm-ppc-ssrlrtems.h
 ===================================================================
 RCS file: gdb/config/powerpc/tm-ppc-ssrlrtems.h
@@ -1218,6 +1282,38 @@ diff -N gdb/config/powerpc/tm-ppc-ssrlrtems.h
 + 
 + 
 + #endif /* TM_PPC_SSRLRTEMS_H */
+Index: opcodes/po/da.gmo
+===================================================================
+RCS file: /afs/slac/g/spear/cvsrep/tools/gdb/opcodes/po/da.gmo,v
+retrieving revision 1.1.1.1
+retrieving revision 1.2
+diff -c -r1.1.1.1 -r1.2
+Binary files /tmp/cvsTkzQz4 and /tmp/cvspF0XPW differ
+Index: sim/configure
+===================================================================
+RCS file: /afs/slac/g/spear/cvsrep/tools/gdb/sim/configure,v
+retrieving revision 1.1.1.1
+retrieving revision 1.2
+diff -c -r1.1.1.1 -r1.2
+*** sim/configure	10 Nov 2004 18:26:30 -0000	1.1.1.1
+--- sim/configure	12 Nov 2005 02:05:40 -0000	1.2
+***************
+*** 1458,1464 ****
+  	extra_subdirs="${extra_subdirs} testsuite"
+  	;;
+    powerpc*-*-eabi* | powerpc*-*-solaris* | powerpc*-*-sysv4* | \
+!   powerpc*-*-elf* | powerpc*-*-linux* | powerpc*-*-netbsd* )
+  	# The PowerPC simulator uses the GCC extension long long as well as
+  	# ANSI prototypes, so don't enable it for random host compilers
+  	# unless asked to.
+--- 1458,1464 ----
+  	extra_subdirs="${extra_subdirs} testsuite"
+  	;;
+    powerpc*-*-eabi* | powerpc*-*-solaris* | powerpc*-*-sysv4* | \
+!   powerpc*-*-elf* | powerpc*-*-linux* | powerpc*-*-netbsd* | powerpc*-*-rtems* )
+  	# The PowerPC simulator uses the GCC extension long long as well as
+  	# ANSI prototypes, so don't enable it for random host compilers
+  	# unless asked to.
 Index: sim/ppc/hw_disk.c
 ===================================================================
 RCS file: /afs/slac/g/spear/cvsrep/tools/gdb/sim/ppc/hw_disk.c,v
