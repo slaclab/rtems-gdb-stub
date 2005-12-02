@@ -116,7 +116,8 @@ as small and as modular as possible.
  interrupt tasks on request [explicit or breakpoint]).
 \item
  Additional patch adds a new gdb target with protocol
- extentions to support loadable modules (CEXP).
+ extentions to support loadable modules (CEXP). Note that
+ the stub works fine without CEXP, however.
 \end{itemize}
 
 \section{Building}
@@ -124,7 +125,7 @@ For the prerequisites consult table~\ref{tbl:prereq}
 \begin{table}
 \begin{center}
 \begin{tabular}{ll}
-host: & download and unpack gdb-6.2.1\\
+host: & download and unpack gdb-6.3\\
       & patches distributed with rtems-gdb-stub\\
       & {\em SLAC Alternative: check out from SSRL CVS Repository}\\
 target: & (optional) libbspExt $>=$ version 1.3\\
@@ -138,7 +139,9 @@ target: & (optional) libbspExt $>=$ version 1.3\\
 \begin{itemize}
 \item
   Change directory to gdb source topdir, create a build
-  subdirectory (name of your choice), chdir there and configure:
+  subdirectory (name of your choice), chdir there and configure
+  (besides `powerpc', the `i386' CPU is supported and the
+  cross-debugger may be configured accordingly):
 \begin{verbatim}
 >  mkdir build
 >  cd build
@@ -316,7 +319,7 @@ target: & (optional) libbspExt $>=$ version 1.3\\
 
 	Once stopped, a thread remains suspended until you
 	issue the \cmd{continue} command or \cmd{detach} (terminate
-	the session). At this point, all threads are resumed.
+	the session). Either of those operations lets all threads resume.
 
 	You can hit \cmd{$<$Ctrl$>$-C} to interrupt the target; this
 	only interrupts the `dummy'/`helper' thread and
@@ -345,6 +348,34 @@ target: & (optional) libbspExt $>=$ version 1.3\\
 \end{verbatim}
 	interrupt, stop helper and attach to it - same state as
 	after connection was established.
+
+\subsection{Executing Subroutines on the Target}
+When evaluating expressions at the \tt{(gdb)} command line (e.g., within
+a \tt{call} or \tt{print} command) gdb may need to execute a subroutine
+on the target. For example,
+\begin{verbatim}
+		(gdb) print printf("Hello\n")
+\end{verbatim}
+invokes the \tt{printf} routine on the target, retrieves the return value
+and prints it to the \tt{gdb} console.
+
+This is actually a pretty complex operation involving creating a dummy stack
+frame and appropriate arguments etc. on the target. Some targets' exception
+handlers may not expect modifications of the stack and might crash as a result
+of an attempt to call a routine on the target.
+
+Also, it should be noted that the routine is always executed in the
+context of the ``current task''. Hence, the ``current task''
+\begin{itemize}
+\item must have sufficient stack space.
+\item must provide an appropriate execution environment. E.g., if the
+      current task is an ``integer-only'' task then an attempt to invoke
+      math routines may fail (crash).
+\item must not have been suspended due to an exception condition (i.e.,
+      it must not be a ``dead'' or ``killed'' thread).
+\end{itemize}
+The `helper' task provides a suitable environment for the purpose of
+executing subroutines on the target.
 
 \subsection{DDD Note}
 After reloading any object on the target (using the \cmd{rtems load} or
