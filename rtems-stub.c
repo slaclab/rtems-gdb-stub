@@ -1169,7 +1169,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	  }
 #ifdef HAVE_CEXP
 	    else if ( !strcmp(ptr+1,"CexpFileList") ) {
-		  if ( 'f' == *ptr ) {
+		  if ( 'f' == *ptr && cexpSystemModule ) {
 			mod = cexpSystemModule->next;
 		  }
 		  if ( mod ) {
