@@ -1,4 +1,9 @@
 Changes since release 1.0:
+  T.S: 2005/12/14:
+  - cexpSystemModule must be checked for NULL (compiled with cexp support
+    but cexp not used).
+  T.S: 2005/12/13:
+  - fixed typo in i386 variant (must be rtems_gdb_tgt_dump_frame() )
   T.S: 2005/12/1:
   - added arch specific routines to dump register/stack contents
     when a thread crashes.
