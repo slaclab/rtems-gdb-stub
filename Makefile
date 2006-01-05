@@ -53,7 +53,7 @@ LIB=$(ARCH)/$(LIBNAME)
 #     MANAGERS=io event message rate_monotonic semaphore timer
 #
 # UNUSED for loadable modules
-MANAGERS=ALL
+MANAGERS=all
 
 ifndef RTEMS_MAKEFILE_PATH
 $(error you need to set the RTEMS_MAKEFILE_PATH environment variable)
@@ -124,6 +124,16 @@ $(LIB): $(OBJS)
 
 ifndef RTEMS_SITE_INSTALLDIR
 RTEMS_SITE_INSTALLDIR = $(PROJECT_RELEASE)
+endif
+
+ifndef RTEMS_SITE_DOCDIR
+RTEMS_SITE_DOCDIR = $(RTEMS_SITE_INSTALLDIR)
+endif
+
+ifndef make-obj
+define make-obj
+	$(make-rel) $(LINK_LIBS)
+endef
 endif
 
 ${RTEMS_SITE_INSTALLDIR}/include \
