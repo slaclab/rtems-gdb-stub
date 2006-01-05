@@ -168,6 +168,11 @@ target: & (optional) libbspExt $>=$ version 1.3\\
   you have to redefine the respective {\tt USE\_xxx} variables
   in the {\tt Makefile}.
 
+  Note that if you {\em do\/} use those packages then you must
+  make sure that your application executes the respective initialization
+  routines ({\tt bspExtInit()} and {\tt cexpInit()}, respectively;
+  consult the header files for any arguments and/or return value).
+
   If you try to build {\em rtems-gdb-stub} independently from
   {\tt ssrlApps}, an additional step is required because
   the agent needs a private header file, {\em cexpmodP.h},
@@ -175,6 +180,13 @@ target: & (optional) libbspExt $>=$ version 1.3\\
   installed with the Cexp package: Edit the Makefile
   and point the {\tt CEXP\_SOURCE\_PATH} variable to the
   correct location.
+
+\item
+  As with any RTEMS application, you must not forget to link all
+  required RTEMS managers -- otherwise you incur what seem to be
+  obscure errors. If memory is not an issue then choosing
+  {\tt MANAGERS=all} in your {\tt Makefile} is most comfortable.
+  
 \end{itemize}
 
 \section{Debugging Session}
