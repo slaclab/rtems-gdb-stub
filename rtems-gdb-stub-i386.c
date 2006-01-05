@@ -214,7 +214,7 @@ unsigned long	val;
 static void (*origHandler)()=0;
 
 void
-rtems_gdb_tbt_dump_frame(RtemsDebugFrame f)
+rtems_gdb_tgt_dump_frame(RtemsDebugFrame f)
 {
 	printk("Exception vector #0x%x; Registers:\n",f->idtIndex);
 	printk("EAX: 0x%08x, EBX: 0x%08x, ECX: 0x%08x, EDX: 0x%08x\n",
