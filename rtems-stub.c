@@ -642,15 +642,17 @@ int               pri   = 0, i = 0;
 			Objects_Information *oi;
 			oi = _Objects_Get_information( tid );
 			*extrabuf = '\'';
-#if 0 /* 4.6.99 _Objects_Copy_name_string has a 3rd 'length' argument... */
 			if ( oi->is_string ) {
 				if ( oi->name_length < EXTRABUFSZ ) {
+#if 0 /* 4.6.99 _Objects_Copy_name_string has a 3rd 'length' argument... */
 					_Objects_Copy_name_string( thr->Object.name, extrabuf + 1  );
+#else
+					_Objects_Copy_name_raw( thr->Object.name, extrabuf + 1, oi->name_length );
+#endif
 				} else {
 					strcpy( extrabuf + 1, "NAME TOO LONG" ); 
 				}
 			} else
-#endif
 			{
 				if ( oi->name_length < EXTRABUFSZ ) {
 					_Objects_Copy_name_raw( &thr->Object.name, extrabuf + 1, oi->name_length );
