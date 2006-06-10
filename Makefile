@@ -26,11 +26,14 @@ CC_O_FILES=$(CC_PIECES:%=${ARCH}/%.o)
 
 STUB_powerpc=rtems-gdb-stub-ppc-shared
 STUB_i386   =rtems-gdb-stub-i386
+STUB_m68k   =rtems-gdb-stub-m68k
+
+S_PIECES_m68k=m68k-stackops
 
 H_FILES=
 
 # Assembly source names, if any, go here -- minus the .S
-S_PIECES=
+S_PIECES=$(S_PIECES_$(RTEMS_CPU))
 S_FILES=$(S_PIECES:%=%.S)
 S_O_FILES=$(S_FILES:%.S=${ARCH}/%.o)
 
