@@ -43,6 +43,8 @@
 #include "rtems-gdb-stub-ppc-shared.h"
 #elif defined(__i386__)
 #include "rtems-gdb-stub-i386.h"
+#elif defined(__m68k__)
+#include "rtems-gdb-stub-m68k.h"
 #else
 #error need target specific helper implementation
 #endif
@@ -293,7 +295,6 @@ char			*msg=0;
 		olda = 0;
 		goto bail;
 	}
-
 	memset(&newa,0,sizeof(newa));
     newa.c_iflag     = IXON | INPCK;
     newa.c_oflag     = 0;
@@ -1881,7 +1882,7 @@ rtems_status_code	sc;
 		while ( RTEMS_SUCCESSFUL != (sc = rtems_semaphore_obtain(gdb_pending_id, RTEMS_WAIT, t)) ) {
 			switch ( sc ) {
 				case RTEMS_TIMEOUT:
-					DBGMSG(DEBUG_SCHED, "Polling for msgs or chars\n");
+					DBGMSG(DEBUG_COMM, "Polling for msgs or chars\n");
 					if ( rtems_gdb_strm ) {
 						/* poll stream for activity */
 						nchars = 0;
