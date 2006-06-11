@@ -163,7 +163,17 @@ unsigned long bot;
 	BP_GET(bot);
 
 	/* fixup the frame pointers */
-	for ( fix=(Frame)bot; fix < top; ) {
+
+	/* the second test was necessary on m68k where GDB pushes
+         * a frame that is not linked to the thread's frame stack
+	 * but contains the address of a trap (for returning control
+	 * to GDB).
+	 * We must not relocate that last element in the chain.
+         * ATM, I don't know a better way than checking if the
+	 * address lies between bot..top. This hack only works
+	 * for this special case, however... 
+	 */
+	for ( fix=(Frame)bot; fix->up < top && fix->up >= (Frame)bot; ) {
 		tmp = fix->up;
 		fix->up = RELOC(tmp);
 		fix = tmp;
