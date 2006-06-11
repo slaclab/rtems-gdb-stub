@@ -10,7 +10,6 @@
 	.align 4
 	.global SYM(_m68k_gdb_exception_wrapper)
 	.global SYM(_m68k_gdb_exception_handler)
-	.global SYM(hdl)
 SYM(_m68k_gdb_exception_wrapper):
 	lea a7@(-M68K_FRAME_SIZE),a7
 	movml  d0-d7/a0-a6,a7@      | save regs; d0,d1,a0,a1 are possibly invalid
@@ -21,9 +20,8 @@ SYM(_m68k_gdb_exception_wrapper):
 
 	.align 4
 	.global SYM(_m68k_gdb_frame_cleanup)
-	.global SYM(_fdebug)
+	.global SYM(_m68k_gdb_ret_to_thread)
 SYM(_m68k_gdb_frame_cleanup):
-	jsr SYM(_fdebug)
-	lea	a7@(2),a7           | skip size field
+	jsr SYM(_m68k_gdb_ret_to_thread)
 	movml  a7@,d0-d7/a0-a7      | restore regs;
 	rte                         | restore PS, PC

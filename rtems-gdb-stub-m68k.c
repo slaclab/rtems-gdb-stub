@@ -19,7 +19,7 @@
 
 #define get_tcb(tid) rtems_gdb_get_tcb_dispatch_off(tid)
 
-#define NUM_BPNTS 250
+#define NUM_BPNTS 25
 
 /* breakpoint instruction */
 #define TRAP0 0x4e40
@@ -35,22 +35,13 @@
 
 #define PS_TRACE	(1<<15)
 
-/* from cpu_asm.S: (offsets in BYTES) */
-#define SAVED         16
-#if ( M68K_COLDFIRE_ARCH == 1 )
-#define SR_OFFSET     2                     /* Status register offset */
-#define PC_OFFSET     4                     /* Program Counter offset */
-#define FVO_OFFSET    0                     /* Format/vector offset */
-#elif ( M68K_HAS_VBR == 1)
-#define SR_OFFSET     0                     /* Status register offset */
-#define PC_OFFSET     2                     /* Program Counter offset */
-#define FVO_OFFSET    6                     /* Format/vector offset */
-#else
-#define SR_OFFSET     2                     /* Status register offset */
-#define PC_OFFSET     4                     /* Program Counter offset */
-#define FVO_OFFSET    0                     /* Format/vector offset placed in the stack */
-#endif /* M68K_HAS_VBR */
+/* Need an ASM wrapper to save all registers; these go onto the interrupt stack */
+extern rtems_isr _m68k_gdb_exception_wrapper(); /* passes control to _m68k_gdb_exception_handler() */
+/* Need an ASM helper to pop and reload all registers from the GDB frame ('longjump' back to thread) */
+extern void      _m68k_gdb_frame_cleanup();     /* passes control to _m68k_gdb_ret_to_thread() */
 
+
+/* little table of all vectors we hook into */
 static struct {
 	void    (*hdl)();
 	uint32_t  vec;
@@ -60,6 +51,12 @@ static struct {
 	{ 0,	TRACE_VEC,	/* TRACE  */ },
 };
 
+static void
+oh_dispatch(int i)
+{
+	if ( i >=0 && i<sizeof(origHandlerTbl)/sizeof(origHandlerTbl[0]) && origHandlerTbl[i].hdl )
+		origHandlerTbl[i].hdl(origHandlerTbl[i].vec);
+}
 
 typedef uint16_t TrapCode;
 
@@ -88,19 +85,19 @@ rtems_gdb_tgt_regoff(int regno, int *poff)
 }
 
 int
-tdumpctxt(rtems_id tid)
+rtems_m68k_dump_task_regs(rtems_id tid)
 {
 Thread_Control *tcb;
 Context_Control r;
 	if ( (tcb = get_tcb(tid)) ) {
 		r = tcb->Registers;
 		_Thread_Enable_dispatch();
-		printk("D2: 0x%08x  ", r.d2); printk("D3: 0x%08x  ", r.d3); printk("D4: 0x%08x\n", r.d4);
-		printk("D5: 0x%08x  ", r.d5); printk("D6: 0x%08x  ", r.d6); printk("D7: 0x%08x\n", r.d7);
-		printk("A2: 0x%08x  ", r.a2); printk("A3: 0x%08x  ", r.a3); printk("A4: 0x%08x\n", r.a4);
-		printk("A5: 0x%08x  ", r.a5); printk("A6: 0x%08x  ", r.a6); printk("\n");
+		printf("D2: 0x%08x  ", r.d2); printk("D3: 0x%08x  ", r.d3); printk("D4: 0x%08x\n", r.d4);
+		printf("D5: 0x%08x  ", r.d5); printk("D6: 0x%08x  ", r.d6); printk("D7: 0x%08x\n", r.d7);
+		printf("A2: 0x%08x  ", (uint32_t)r.a2); printk("A3: 0x%08x  ", (uint32_t)r.a3); printk("A4: 0x%08x\n", (uint32_t)r.a4);
+		printf("A5: 0x%08x  ", (uint32_t)r.a5); printk("A6: 0x%08x  ", (uint32_t)r.a6); printk("\n");
 
-		printk("SP: 0x%08x  PS: 0x%08x\n", r.a7_msp, r.sr);
+		printf("SP: 0x%08x  PS: 0x%08x\n", (uint32_t)r.a7_msp, r.sr);
 		return 0;
 	}
 	return -1;
@@ -118,8 +115,8 @@ int             deadbeef = 0xdeadbeef;
 
 	if ( f ) {
 		memcpy(buf, f->regs.d, 16*4);
-		*(uint32_t*)(buf + M68K_PS_REGNUM*4) = f->regs.ps;
-		*(uint32_t*)(buf + M68K_PC_REGNUM*4) = f->regs.pc;
+		*(uint32_t*)(buf + M68K_PS_REGNUM*4) = f->ret_info.ps;
+		*(uint32_t*)(buf + M68K_PC_REGNUM*4) = f->ret_info.pc;
 		/* TODO: copy FP context */
 	} else {
 		memcpy(buf + M68K_D0_REGNUM*4, &deadbeef, 4);
@@ -165,8 +162,8 @@ int            deadbeef = 0xdeadbeef;
 
 	if ( f ) {
 		YPCMEM(buf, f->regs.d, 16*4);
-		f->regs.ps = *(uint32_t*)(buf + M68K_PS_REGNUM*4);
-		f->regs.pc = *(uint32_t*)(buf + M68K_PC_REGNUM*4);
+		f->ret_info.ps = *(uint32_t*)(buf + M68K_PS_REGNUM*4);
+		f->ret_info.pc = *(uint32_t*)(buf + M68K_PC_REGNUM*4);
 	} else {
 		YPCMEM(buf + M68K_D0_REGNUM*4, &deadbeef, 4);
 		YPCMEM(buf + M68K_D1_REGNUM*4, &deadbeef, 4);
@@ -205,7 +202,7 @@ void
 rtems_gdb_tgt_dump_frame(RtemsDebugFrame f)
 {
 int i;
-	printk("Exception vector #%u (0x%x); Registers:\n",f->vector, f->vector);
+	printk("Exception vector #%u (0x%x) [frame @0x%08x]; Registers:\n",f->vector, f->vector, f);
 	for (i=0; i<8;) {
 		printk("D%i: 0x%08x  ",i,f->regs.d[i]);
 		if ( ++i%4 == 0 )
@@ -216,13 +213,141 @@ int i;
 		if ( ++i%4 == 0 )
 			printk("\n");
 	}
-	printk("PC: 0x%08x; PS: 0x%04x; FVO: 0x%04x\n", f->regs.pc, f->regs.ps, f->regs.fvo);
+	printk("PC: 0x%08x; PS: 0x%04x; FVO: 0x%04x\n", f->ret_info.pc, f->ret_info.ps, f->ret_info.fvo);
 }
 
-/* Need an ASM wrapper to save all registers; these go onto the interrupt stack */
-extern rtems_isr _m68k_gdb_exception_wrapper();
-extern void      _m68k_gdb_frame_cleanup();
+/* Here comes the low-level exception handler.
+ * Unfortunately, on this platform things are a bit complex.
+ * The gdb daemon assumes a thread incurring an exception (trap or fault)
+ * suspends itself in the middle of the exception handler where the full
+ * register info is available.
+ * The 68k code (cpu_asm.S) however, disables thread dispatching during
+ * execution of the handler (must do so since a single ISR stack is used
+ * and cpu_asm.S assumes that only one thread at a time uses the special
+ * stack).
+ * Therefore, we must play some dirty tricks:
+ *  1) Our low-level handler first has to gather all the register info
+ *     (cpu_asm doesn't save and pass a complete frame to the exception
+ *     handler).
+ *     d2..d7, a2..a6 are saved onto the ISR stack by the assembly wrapper
+ *     around _m68k_gdb_exception_handler (C-code could clobber d2..a6).
+ *     d0,d1,a0,a2,ps,pc,fvo are retrieved from the user stack where
+ *     _ISR_Handler stored them.
+ *     (hence this code depends on ISR_Handler implementation :-().
+ *
+ *     At this point, the stacks look like this:
+ *
+ *        user stack                             ISR stack
+ *
+ *         [trapped thread]                .---- ptr to usr stack
+ *         8-bytes return info (PS,PC)     .     vector
+ *         pushed by CPU on trap           .     <rtn addr to _ISR_Handler>
+ *         a1                              .     a7 regs pushed by 
+ *         a0                              .     .. our wrapper.
+ *         d1                              .     a2 (a7 used as local var below)
+ *         d0                   <----------.
+ *
+ *  2) User stack is manipulated so a 'top-half' of exception handling
+ *     code is executed later, when thread dispatching is enabled again.
+ *     the 'top-half' can then safely suspend itself and post to the daemon.
+ *
+ *        user stack                             ISR stack
+ *
+ *   ....  [trapped thread]                .---- ptr to usr stack
+ *         8-bytes return info (PS,PC)     .     vector
+ *   'GDB' (return to thread)              .     <rtn addr to _ISR_Handler>
+ *   frame 'msg' struct                    .     a7 regs pushed by 
+ *   ....  'all registers'                 .     .. our wrapper.
+ *         8-bytes return info (PS,PC)     .     d2 (a7 used as local var below)
+ *         (to _m68k_gdb_frame_cleanup)    .
+ *         a1                              .
+ *         a0                              .
+ *         d1                              .
+ *         d0                   <----------.
+ *
+ *  3) after _m68k_gdb_exception_handler terminates, control is passed back through
+ *     the wrapper (pops d2..a7) to _ISR_Handler which pops the vector from the
+ *     ISR stack, switches the stack back, pops + reloads d0..a1 (not really needed)
+ *     and jumps to _m68k_gdb_frame_cleanup() after finishing [thread dispatching has
+ *     been enabled.
+ *
+ *  4) 'cleanup' (assembly in m68k-stackops.S) invokes _m68k_gdb_ret_to_thread()
+ *     which does the ordinary processing of exceptions and posts the frame
+ *     struct to the daemon.
+ *
+ *  5) If the thread is woken up, 8 'return info' bytes (GDB could have modified
+ *     the PC) are stored on the usr stack and the SP (in the frame, not the real
+ *     register contents) is adjusted to point there.
+ *
+ *  6) 'cleanup' pops d0..a7 from the stack. This reloads SP which now points
+ *     to the final 'return info'. The 'rte' instruction then passes control
+ *     back to the thread.
+ */
+ 
 
+#define SAVED 16	/* space used by ISR_Handler to store d0,d1,a0,a1 */
+
+/* 'Bottom' handler. Gathers all register info and pushes a RtemsDebugFrame struct
+ * on the user stack. Bottom of the user stack is fixed up, so _ISR_Handler properly
+ * unwraps it and passes control - not back to the thread - but to our 'cleanup'
+ * AKA 'top-half' routine.
+ */
+void
+_m68k_gdb_exception_handler(int arg)
+{
+M68k_ExceptionFrame frame = (M68k_ExceptionFrame)&arg;
+uint32_t            *p = frame->usr_stack;
+M68k_GdbFrame       gf;
+M68k_RetInfo        ri;
+
+	/* fixup the data in the frame; only d2..d7, a2..a6 are valid now */
+
+	/* see m68k cpu_asm.S for details -- this code DEPENDS on cpu_asm.S details */
+
+	/* it would probably be better to make changes there and provide a generic
+         * API for low-level exception handling...
+	 */
+
+printk("\n\n\n\nTSILL EXCEPTION\n");
+
+	frame->regs.d[0] = p[0];
+	frame->regs.d[1] = p[1];
+
+	frame->regs.a[0] = p[2];
+	frame->regs.a[1] = p[3];
+
+	frame->regs.a[7] = (uint32_t)p + SAVED + sizeof(M68k_RetInfoRec);
+
+	/* push all info on user stack */
+	frame->usr_stack = (uint32_t *)(frame->regs.a[7] - sizeof(M68k_GdbFrameRec) - sizeof(M68k_RetInfoRec) - SAVED);
+	gf = (M68k_GdbFrame)((unsigned)frame->usr_stack + SAVED + sizeof(M68k_RetInfoRec));
+
+	/* copy return info into GdbFrame (not really necessary if GdbFrame is already on user stack) */
+	gf->ret_info  = *(M68k_RetInfo)((uint32_t)p+SAVED);
+
+	gf->vector    = frame->vector;
+	gf->msg.frm   = gf;
+	gf->regs      = frame->regs;
+	
+	/* fixup the user stack */
+	p    = (uint32_t*) frame->usr_stack;
+	p[0] = frame->regs.d[0];
+	p[1] = frame->regs.d[1];
+	p[2] = frame->regs.a[0];
+	p[3] = frame->regs.a[1];
+
+	ri = (M68k_RetInfo)((uint32_t)p+SAVED);
+
+	/* copy return info below the stuff we pushed */
+	ri->ps  = (gf->ret_info.ps & ~PS_TRACE);
+	ri->fvo = gf->ret_info.fvo;
+	/* jump to our frame cleanup routine when passing control from the ISR to the user stack */
+	ri->pc  = (uint32_t)_m68k_gdb_frame_cleanup;
+}
+
+#undef SAVED
+
+/* real work for 'top-half' exception handler */
 static void
 exception_handler(RtemsDebugFrame f)
 {
@@ -232,12 +357,12 @@ int		 oh_idx = ACCESS_HDL;	/* pick ACCESS for default */
 	    ||*/ !_Thread_Executing 
 		|| (RTEMS_SUCCESSFUL!=rtems_task_ident(RTEMS_SELF,RTEMS_LOCAL, &f->msg.tid)) ) {
 		/* unable to deal with this situation */
-		origHandlerTbl[oh_idx].hdl(f->vector);
+		oh_dispatch(f->vector);
 		return;
 	}
 
 	KDBGMSG(DEBUG_SCHED, "Task %x got exception %i, frame %x, SP %x, IP %x\n\n",
-		f->msg.tid, f->vector, f, f->regs.a[7], f->regs.pc);
+		f->msg.tid, f->vector, f, f->regs.a[7], f->ret_info.pc);
 
 	/* the debugger should be able to handle its own exceptions */
 	f->msg.frm = f;
@@ -251,7 +376,7 @@ int		 oh_idx = ACCESS_HDL;	/* pick ACCESS for default */
 
 		case TRACE_VEC:
 			f->msg.sig = SIGTRAP;
-			f->regs.ps &= ~PS_TRACE;
+			f->ret_info.ps &= ~PS_TRACE;
 
 		break;
 
@@ -293,7 +418,7 @@ int		 oh_idx = ACCESS_HDL;	/* pick ACCESS for default */
 			oh_idx = TRAP0_HDL;
 			f->msg.sig = SIGCHLD;
 			/* adjust PC */
-			f->regs.pc -= 2;
+			f->ret_info.pc -= 2;
 		break;
 
 		break;
@@ -303,74 +428,40 @@ int		 oh_idx = ACCESS_HDL;	/* pick ACCESS for default */
 
 #if 1
 	if ( rtems_gdb_notify_and_suspend(&f->msg) ) {
-		origHandlerTbl[oh_idx].hdl(f->vector);
+		oh_dispatch(f->vector);
 		return;
 	}
 #endif
 
 	KDBGMSG(DEBUG_SCHED, "Resumed from exception; contSig %i, sig %i, SP 0x%08x PC 0x%08x BP 0x%08x\n",
-		f->msg.contSig, f->msg.sig, f->msg.frm->regs.a[7], f->msg.frm->regs.pc, f->msg.frm->regs.a[6]);
+		f->msg.contSig, f->msg.sig, f->msg.frm->regs.a[7], f->msg.frm->ret_info.pc, f->msg.frm->regs.a[6]);
 
 	if ( SIGCONT != f->msg.contSig ) {
-		f->msg.frm->regs.ps |= PS_TRACE;
+		f->msg.frm->ret_info.ps |= PS_TRACE;
 	}
 }
 
+int hoppel=0;
+
+/* top-half exception handler (itself wrapped by assembly code) */
 void
-_m68k_gdb_exception_handler(int arg)
+_m68k_gdb_ret_to_thread(M68k_GdbFrameRec r)
 {
-M68k_ExceptionFrame frame = (M68k_ExceptionFrame)&arg;
-uint32_t            *p = frame->usr_stack;
-M68k_GdbFrame       gf;
+	/* branch to main exception handler */
+	exception_handler(&r);
 
-	/* fixup the data in the frame; only d2..d7, a2..a6 are valid now */
+	/* fixup registers */
 
-	/* see m68k cpu_asm.S for details -- this code DEPENDS on cpu_asm.S details */
+	/* adjust stack to store return info */
+	r.regs.a[7] -= sizeof(M68k_RetInfoRec);
+	/* store return info */
+	*((M68k_RetInfo)(r.regs.a[7])) = r.ret_info;
 
-	/* it would probably be better to make changes there and provide a generic
-         * API for low-level exception handling...
-	 */
-
-	frame->regs.d[0] = p[0];
-	frame->regs.d[1] = p[1];
-
-	frame->regs.a[0] = p[2];
-	frame->regs.a[1] = p[3];
-
-	frame->regs.a[7] = (uint32_t)p + SAVED + 8;
-
-	frame->regs.ps   = *(uint16_t*)((uint32_t)p + SAVED + SR_OFFSET);
-	frame->regs.fvo  = *(uint16_t*)((uint32_t)p + SAVED + FVO_OFFSET);
-
-	frame->regs.pc   = *(uint32_t*)((uint32_t)p + SAVED + PC_OFFSET);
-
-printk("TSILL EXCEPTION\n");
-#if 1
-	/* test if modifying the user stack works */
-	/* wipe out */
-	memset(p,0,SAVED+8);
-#endif
-
-	p = frame->usr_stack = (uint32_t *)(frame->regs.a[7] - 8 - sizeof(M68k_GdbFrameRec) - 8 - SAVED);
-	gf = (M68k_GdbFrame)(p+6);
-
-	gf->vector    = frame->vector;
-	gf->size      = sizeof(*gf);
-	gf->msg.frm   = gf;
-	gf->regs      = frame->regs;
-	
-	/* fixup the user stack */
-	p[0] = frame->regs.d[0];
-	p[1] = frame->regs.d[1];
-	p[2] = frame->regs.a[0];
-	p[3] = frame->regs.a[1];
-
-
-	*(uint16_t*)((uint32_t)p + SAVED + SR_OFFSET)  = frame->regs.ps;
-	*(uint16_t*)((uint32_t)p + SAVED + FVO_OFFSET) = frame->regs.fvo;
-	*(uint32_t*)((uint32_t)p + SAVED + PC_OFFSET)  = (uint32_t)_m68k_gdb_frame_cleanup;
-
+rtems_gdb_tgt_dump_frame(&r);
+	if ( hoppel )
+		rtems_task_suspend(RTEMS_SELF);
 }
+
 
 static int
 isr_restore(int n)
@@ -378,7 +469,11 @@ isr_restore(int n)
 int       rval = 0;
 rtems_isr (*dummy)(rtems_vector_number);
 	while (--n >= 0) {
-		rval = rval || rtems_interrupt_catch(origHandlerTbl[n].hdl, origHandlerTbl[n].vec, &dummy);
+		if ( ! origHandlerTbl[n].hdl ) {
+			/* if no handler was registered earlier then we're hosed */
+			fprintf(stderr,"Cannot uninstall exception handler -- no old handler known\n");
+		}
+		rval = (rval || rtems_interrupt_catch(origHandlerTbl[n].hdl, origHandlerTbl[n].vec, &dummy));
 		origHandlerTbl[n].hdl = 0;
 	}
 	return rval;
@@ -420,14 +515,14 @@ void
 rtems_gdb_tgt_set_pc(RtemsDebugMsg msg, unsigned long pc)
 {
 	assert( msg->frm );
-	msg->frm->regs.pc = pc;
+	msg->frm->ret_info.pc = pc;
 }
 
 unsigned long
 rtems_gdb_tgt_get_pc(RtemsDebugMsg msg)
 {
 	assert( msg->frm );
-	return msg->frm->regs.pc;
+	return msg->frm->ret_info.pc;
 }
 
 
@@ -515,20 +610,4 @@ int
 rtems_gdb_tgt_single_step(RtemsDebugMsg msg)
 {
 	return -1;
-}
-
-void
-_fdebug(M68k_GdbFrameRec r)
-{
-#if 0
-	/* branch to main exception handler */
-	exception_handler(&r);
-#endif
-
-	/* fixup registers */
-	r.regs.a[7] = (uint32_t)&r + sizeof(M68k_GdbFrameRec);
-	*(uint16_t*)((uint32_t)&r + sizeof(M68k_GdbFrameRec) + SR_OFFSET)  = r.regs.ps;
-	*(uint16_t*)((uint32_t)&r + sizeof(M68k_GdbFrameRec) + FVO_OFFSET) = r.regs.fvo;
-	*(uint32_t*)((uint32_t)&r + sizeof(M68k_GdbFrameRec) + PC_OFFSET)  = r.regs.pc;
-rtems_gdb_tgt_dump_frame(&r);
 }

@@ -11,33 +11,45 @@ typedef struct _M68k_GdbFrameRec * RtemsDebugFrame;
 
 #include "rtems-gdb-stubP.h"
 
+/* Generic registers */
+typedef struct _M68k_RegisterRec {
+		uint32_t	d[8];
+		uint32_t	a[8];
+} M68k_RegisterRec;
 
-/* Register layout in GDB layout (no FP yet) */
-
-typedef struct _M68k_RegsRec {
-	uint32_t	d[8];
-	uint32_t	a[8];
-	uint16_t	ps;	/* status        */
-	uint16_t	fvo;	/* format/vector */
-	uint32_t	pc;
-} M68k_RegsRec, *M68k_Regs;
+/* Layout of what is pushed by an exception */
+typedef	struct _M68k_RetInfoRec {
+#if ( M68K_COLDFIRE_ARCH == 1 ) || ( M68K_HAS_VBR != 1)
+		uint16_t	fvo;	/* format/vector */
+		uint16_t	ps;	/* status        */
+		uint32_t	pc;
+#else
+		uint16_t	ps;	/* status        */
+		uint32_t	pc;
+		uint16_t	fvo;	/* format/vector */
+#endif
+} M68k_RetInfoRec, *M68k_RetInfo;
 
 /* Layout of the stuff we dump on the user stack to communicate with
  * the daemon
  */
 typedef struct _M68k_GdbFrameRec {
-	uint16_t		size;	/* to help assembly code popping this stuff */
+	/* registers - MUST BE FIRST so they can easily be popped off (m68k-stackops.S) */
+	M68k_RegisterRec	regs;
 	/* message header */
 	RtemsDebugMsgRec	msg;
-	/* registers */
-	M68k_RegsRec		regs;
 	/* vector    */
-	uint32_t                vector;
+	uint16_t                vector;
+	/* stuff we need to put on the stack so we can return to the executing thread */
+	M68k_RetInfoRec		ret_info;
 } M68k_GdbFrameRec, *M68k_GdbFrame;
 
-/* Layout on the interrupt stack */
+/* Layout on the interrupt stack (as set up be _ISR_Handler (cpu_asm.S)
+ * AND our wrapper _m68k_gdb_exception_wrapper (m68k-stackops.S):
+ */
 typedef struct _M68k_Exception_Frame {
-	M68k_RegsRec    regs;
+	/* wrapper pushes registers */
+	M68k_RegisterRec	regs;
 	/* return addr to _ISR_Handler; this and everything beyond
          * was pushed by _ISR_Handler
          */
@@ -47,10 +59,10 @@ typedef struct _M68k_Exception_Frame {
 } M68k_ExceptionFrameRec, *M68k_ExceptionFrame;
 #endif
 
-/* this is for the assembler; it MUST match the frame rec size
+/* this is for the wrapper; it MUST match the frame rec size
  * MINUS everything already on the stack!
  */
-#define M68K_FRAME_SIZE     ((8+8+2)*4)
+#define M68K_FRAME_SIZE     ((8+8)*4)
 
 /* 8*d, 8*a, ps, pc */
 #define NUMREGBYTES ((8+8+1+1)*4)
@@ -94,9 +106,9 @@ static inline void BREAKPOINT()
  * Therefore, we must resort to a separate stack.
  * See 'switch_stack.c' for an explanation how it works...
  */
-#define USE_GDB_REDZONE
+#undef USE_GDB_REDZONE
 
-/* Define architecture specific stuff for i386 */
+/* Define architecture specific stuff for m68k */
 
 typedef struct FrameRec_ {
 	struct FrameRec_ *up;
@@ -107,8 +119,8 @@ typedef struct FrameRec_ {
 #define SP_GET(sp)	do { asm volatile("movl %%a7, %0":"=r"(sp)); } while(0)
 #define BP_GET(bp)	do { asm volatile("movl %%a6, %0":"=r"(bp)); } while(0)
 #define FLIP_REGS(diff) do { asm volatile("addl %0, %%a6; addl %0, %%a7"::"r"(diff)); } while(0)
-#define SP(f)       ((unsigned long)(f)->a[7])
-#define PC(f)       ((unsigned long)(f)->pc)
+#define SP(f)       ((unsigned long)(f)->regs.a[7])
+#define PC(f)       ((unsigned long)(f)->ret_info.pc)
 
 #endif /* ASM */
 
