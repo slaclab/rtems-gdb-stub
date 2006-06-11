@@ -1,5 +1,5 @@
 /* $Id$ */
-/* Target BSP specific gdb stub helpers for powerpc/shared & derived */
+/* Target BSP specific gdb stub helpers for i386 */
 #ifndef RTEMS_GDB_STUB_I386_H
 #define RTEMS_GDB_STUB_I386_H
 
