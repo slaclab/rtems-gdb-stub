@@ -1,4 +1,6 @@
 Changes since release 1.1:
+  T.S: 2006/6/10:
+  - m68k (coldfire/uC5282) port.
   T.S: 2005/12/14:
   - cexpSystemModule must be checked for NULL (compiled with cexp support
     but cexp not used).
