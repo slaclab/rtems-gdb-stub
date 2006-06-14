@@ -73,7 +73,7 @@ extern volatile int rtems_remote_debug;
 
 
 /* Selective breakpoints: The GDB remote protocol has no provision to set
- *                        breakpoints on a pre-thread basis. You can set
+ *                        breakpoints on a per-thread basis. You can set
  *                        this variable (e.g., from GDB) to a thread id
  *                        and (currently all) breakpoints are then only
  *                        active for the selected TID.
@@ -98,5 +98,8 @@ rtems_gdb_start(int pri, char *ttyName);
  */
 int
 rtems_gdb_stop(int override);
+
+/* target dependent code may set this to block module unloading */
+extern int rtems_gdb_nounload;
 
 #endif

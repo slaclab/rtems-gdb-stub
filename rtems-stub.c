@@ -56,6 +56,8 @@
 #define BLOCK_NON_INTERRUPTIBLE	1
 #define BLOCK_INTERRUPTIBLE		2
 
+int rtems_gdb_nounload = 0;
+
 STATIC	FILE * volatile rtems_gdb_strm = 0;
 
 static	unsigned wait_ticks  = 0; /* initialized to ms; multiplied by tick rate at init */

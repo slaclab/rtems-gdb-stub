@@ -6,6 +6,8 @@
  *       CAREFULLY WRITTEN -- PLEASE REVIEW
  */
 
+/* Author: Till Straumann, <strauman@slac.stanford.edu>, 2006 */
+
 #define __RTEMS_VIOLATE_KERNEL_VISIBILITY__
 #include <rtems.h>
 #include <rtems/bspIo.h> /* printk */
@@ -92,10 +94,10 @@ Context_Control r;
 	if ( (tcb = get_tcb(tid)) ) {
 		r = tcb->Registers;
 		_Thread_Enable_dispatch();
-		printf("D2: 0x%08x  ", r.d2); printk("D3: 0x%08x  ", r.d3); printk("D4: 0x%08x\n", r.d4);
-		printf("D5: 0x%08x  ", r.d5); printk("D6: 0x%08x  ", r.d6); printk("D7: 0x%08x\n", r.d7);
-		printf("A2: 0x%08x  ", (uint32_t)r.a2); printk("A3: 0x%08x  ", (uint32_t)r.a3); printk("A4: 0x%08x\n", (uint32_t)r.a4);
-		printf("A5: 0x%08x  ", (uint32_t)r.a5); printk("A6: 0x%08x  ", (uint32_t)r.a6); printk("\n");
+		printf("D2: 0x%08x  ", r.d2); printf("D3: 0x%08x  ", r.d3); printf("D4: 0x%08x\n", r.d4);
+		printf("D5: 0x%08x  ", r.d5); printf("D6: 0x%08x  ", r.d6); printf("D7: 0x%08x\n", r.d7);
+		printf("A2: 0x%08x  ", (uint32_t)r.a2); printf("A3: 0x%08x  ", (uint32_t)r.a3); printf("A4: 0x%08x\n", (uint32_t)r.a4);
+		printf("A5: 0x%08x  ", (uint32_t)r.a5); printf("A6: 0x%08x  ", (uint32_t)r.a6); printf("\n");
 
 		printf("SP: 0x%08x  PS: 0x%08x\n", (uint32_t)r.a7_msp, r.sr);
 		return 0;
@@ -241,7 +243,7 @@ int i;
  *
  *         [trapped thread]                .---- ptr to usr stack
  *         8-bytes return info (PS,PC)     .     vector
- *         pushed by CPU on trap           .     <rtn addr to _ISR_Handler>
+ *           pushed by CPU on trap         .     <rtn addr to _ISR_Handler>
  *         a1                              .     a7 regs pushed by 
  *         a0                              .     .. our wrapper.
  *         d1                              .     a2 (a7 used as local var below)
@@ -269,7 +271,7 @@ int i;
  *     the wrapper (pops d2..a7) to _ISR_Handler which pops the vector from the
  *     ISR stack, switches the stack back, pops + reloads d0..a1 (not really needed)
  *     and jumps to _m68k_gdb_frame_cleanup() after finishing [thread dispatching has
- *     been enabled.
+ *     been enabled].
  *
  *  4) 'cleanup' (assembly in m68k-stackops.S) invokes _m68k_gdb_ret_to_thread()
  *     which does the ordinary processing of exceptions and posts the frame
@@ -282,8 +284,12 @@ int i;
  *  6) 'cleanup' pops d0..a7 from the stack. This reloads SP which now points
  *     to the final 'return info'. The 'rte' instruction then passes control
  *     back to the thread.
+ *
+ *  In addition to all this, 'switch_stack' can be used to move the entire
+ *  user stack below what the thread is using to a private area while
+ *  gdb is active (during suspension in 'notify_and_suspend') so gdb
+ *  can manipulate the user stack as it wants.
  */
- 
 
 #define SAVED 16	/* space used by ISR_Handler to store d0,d1,a0,a1 */
 
@@ -307,8 +313,6 @@ M68k_RetInfo        ri;
 	/* it would probably be better to make changes there and provide a generic
          * API for low-level exception handling...
 	 */
-
-printk("\n\n\n\nTSILL EXCEPTION\n");
 
 	frame->regs.d[0] = p[0];
 	frame->regs.d[1] = p[1];
@@ -457,11 +461,18 @@ _m68k_gdb_ret_to_thread(M68k_GdbFrameRec r)
 	/* store return info */
 	*((M68k_RetInfo)(r.regs.a[7])) = r.ret_info;
 
-rtems_gdb_tgt_dump_frame(&r);
-	if ( hoppel )
+	if ( hoppel ) {
+		rtems_gdb_tgt_dump_frame(&r);
 		rtems_task_suspend(RTEMS_SELF);
+	}
 }
 
+static void
+dummyHandler(int vector)
+{
+	printk("Dumb exception handler; vector %i (0x%x) trapped; suspending task\n",vector,vector);
+	rtems_task_suspend(RTEMS_SELF);
+}
 
 static int
 isr_restore(int n)
@@ -472,6 +483,9 @@ rtems_isr (*dummy)(rtems_vector_number);
 		if ( ! origHandlerTbl[n].hdl ) {
 			/* if no handler was registered earlier then we're hosed */
 			fprintf(stderr,"Cannot uninstall exception handler -- no old handler known\n");
+			fprintf(stderr,"I'll install a dummy handler and lock this module in memory\n");
+			rtems_gdb_nounload = 1;
+			origHandlerTbl[n].hdl = dummyHandler;
 		}
 		rval = (rval || rtems_interrupt_catch(origHandlerTbl[n].hdl, origHandlerTbl[n].vec, &dummy));
 		origHandlerTbl[n].hdl = 0;
@@ -506,7 +520,7 @@ int rval = 0, i;
 
 	if ( rval ) {
 		ERRMSG("ERROR: exception handler %s\n",
-				action ? "already installed" : "has changed; cannot uninstall");
+				action ? "already installed" : "cannot be removed; uninstall failed");
 	}
 	return rval;
 }
