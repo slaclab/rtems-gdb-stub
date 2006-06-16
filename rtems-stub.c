@@ -298,10 +298,23 @@ char			*msg=0;
 		goto bail;
 	}
 	memset(&newa,0,sizeof(newa));
-    newa.c_iflag     = IXON | INPCK;
+	/* Do what gdb does (ser-unix.c: hardwire_raw())
+#ifdef HAVE_TERMIOS
+		state.termios.c_iflag = 0;
+		state.termios.c_oflag = 0;
+		state.termios.c_lflag = 0;
+		state.termios.c_cflag &= ~(CSIZE | PARENB);
+		state.termios.c_cflag |= CLOCAL | CS8;
+		state.termios.c_cc[VMIN] = 0;
+		state.termios.c_cc[VTIME] = 0;
+#endif
+	*/
+
+    newa.c_iflag     = 0; /* IXON | INPCK; */
     newa.c_oflag     = 0;
-    newa.c_cflag     = CS8 | CREAD |/* silently ignored!! PARENB |*/ CLOCAL;
     newa.c_lflag     = 0;
+    newa.c_cflag    &= ~(CSIZE | PARENB);
+    newa.c_cflag    |= CLOCAL | CS8;
     newa.c_cc[VMIN]  = 1;
     newa.c_cc[VTIME] = 0;
     if ( cfsetispeed(&newa, B115200) || cfsetospeed(&newa, B115200) ) {
@@ -1508,13 +1521,6 @@ unsigned ticks_per_sec;
     rtems_clock_get( RTEMS_CLOCK_GET_TICKS_PER_SECOND, &ticks_per_sec );
 	wait_ticks  = ticks_per_sec * poll_ms;
 	wait_ticks /= 1000;
-
-#ifdef defined(__m68k__)
-	if ( (pri < 0 && pri != -12345) || ttyName ) {
-		fprintf(stderr,"REFUSE to run in the foreground; uC5282 serial port doesn't receive \000 chars ???\n");
-		return -1;
-	}
-#endif
 
 #if 0	/* cloning stdio doesn't work properly */
 	if ( ttyName && !strcmp(ttyName, "-") )
