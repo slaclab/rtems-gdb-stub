@@ -430,12 +430,10 @@ int		 oh_idx = ACCESS_HDL;	/* pick ACCESS for default */
 		default: break;
 	}
 
-#if 1
 	if ( rtems_gdb_notify_and_suspend(&f->msg) ) {
 		oh_dispatch(f->vector);
 		return;
 	}
-#endif
 
 	KDBGMSG(DEBUG_SCHED, "Resumed from exception; contSig %i, sig %i, SP 0x%08x PC 0x%08x BP 0x%08x\n",
 		f->msg.contSig, f->msg.sig, f->msg.frm->regs.a[7], f->msg.frm->ret_info.pc, f->msg.frm->regs.a[6]);
@@ -445,7 +443,9 @@ int		 oh_idx = ACCESS_HDL;	/* pick ACCESS for default */
 	}
 }
 
-int hoppel=0;
+#ifdef DEBUGGING_ENABLED
+int rtems_gdb_m68k_freeze_resume=0;
+#endif
 
 /* top-half exception handler (itself wrapped by assembly code) */
 void
@@ -461,10 +461,12 @@ _m68k_gdb_ret_to_thread(M68k_GdbFrameRec r)
 	/* store return info */
 	*((M68k_RetInfo)(r.regs.a[7])) = r.ret_info;
 
-	if ( hoppel ) {
+#ifdef DEBUGGING_ENABLED
+	if ( rtems_gdb_m68k_freeze_resume ) {
 		rtems_gdb_tgt_dump_frame(&r);
 		rtems_task_suspend(RTEMS_SELF);
 	}
+#endif
 }
 
 static void
@@ -481,10 +483,12 @@ int       rval = 0;
 rtems_isr (*dummy)(rtems_vector_number);
 	while (--n >= 0) {
 		if ( ! origHandlerTbl[n].hdl ) {
-			/* if no handler was registered earlier then we're hosed */
-			fprintf(stderr,"Cannot uninstall exception handler -- no old handler known\n");
-			fprintf(stderr,"I'll install a dummy handler and lock this module in memory\n");
-			rtems_gdb_nounload = 1;
+			if ( ! rtems_gdb_nounload ) {
+				/* if no handler was registered earlier then we're hosed */
+				fprintf(stderr,"Cannot uninstall exception handler -- no old handler known\n");
+				fprintf(stderr,"I'll install a dummy handler and lock this module in memory\n");
+				rtems_gdb_nounload = 1;
+			}
 			origHandlerTbl[n].hdl = dummyHandler;
 		}
 		rval = (rval || rtems_interrupt_catch(origHandlerTbl[n].hdl, origHandlerTbl[n].vec, &dummy));
