@@ -1509,12 +1509,20 @@ unsigned ticks_per_sec;
 	wait_ticks  = ticks_per_sec * poll_ms;
 	wait_ticks /= 1000;
 
+#ifdef defined(__m68k__)
+	if ( (pri < 0 && pri != -12345) || ttyName ) {
+		fprintf(stderr,"REFUSE to run in the foreground; uC5282 serial port doesn't receive \000 chars ???\n");
+		return -1;
+	}
+#endif
+
 #if 0	/* cloning stdio doesn't work properly */
 	if ( ttyName && !strcmp(ttyName, "-") )
 #else
 	if ( pri < 0 )
 #endif
 	{
+
 		/* run in foreground */
 		if ( !isatty(fileno(stdout)) ) {
 			fprintf(stderr,"<stdout> is not a terminal; cannot run in foreground!\n");
