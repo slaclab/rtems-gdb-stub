@@ -14,7 +14,9 @@
  */
 
 /* max number of simultaneously stopped threads */
+#ifndef NUM_FRAMES
 #define NUM_FRAMES	40
+#endif
 
 /*
  *
@@ -137,7 +139,7 @@
 
 #define RELOC(ptr) ((void*)((diff)+(unsigned long)(ptr)))
 
-typedef union GdbStackFrameU_ *GdbStackFrame;
+typedef union GdbStackFrameU_ __attribute__((aligned(STACK_ALIGNMENT))) *GdbStackFrame;
 
 typedef union GdbStackFrameU_ {
 	struct {
@@ -277,6 +279,7 @@ KDBGMSG(DEBUG_STACK, "BACK resuming at (m %x, frm %x) PC %x SP %x\n",
 static void
 init_stack()
 {
-	for ( freeStck = savedStack + (NUM_FRAMES-1); freeStck > savedStack; freeStck-- )
+	for ( freeStck = savedStack + (NUM_FRAMES-1); freeStck > savedStack; freeStck-- ) {
 		(freeStck-1)->next = freeStck;
+	}
 }
