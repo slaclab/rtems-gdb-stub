@@ -1,4 +1,10 @@
 Changes since release 1.1:
+  T.S: 2006/6/16:
+  - switch_stack: free list pointer MUST be declared to point to ALIGNED structs
+  - set serial port configuration to mirror what GDB does. This fixed a problem
+    (uC5282) where everything seemed to work but binary \000 chars were dropped
+    leading to weird memory corruption ('call/print' command). Apparently,
+    the checksum algorithm doesn't catch that case!
   T.S: 2006/6/10:
   - m68k (coldfire/uC5282) port.
   T.S: 2005/12/14:
