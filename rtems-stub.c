@@ -32,8 +32,6 @@
 #endif
 
 /* Debugging definitions */
-#define STATIC
-
 
 #ifndef STATIC
 #define STATIC static
