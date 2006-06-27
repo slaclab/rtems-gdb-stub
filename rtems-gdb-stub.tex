@@ -261,7 +261,8 @@ don't know if this is the recommended way, though. YMMV.
 	Passing a priority of 0 lets the daemon pick its default
 	scheduling priority. The second argument defines the
 	connection method to be used. A NULL pointer lets the
-	daemon listen on TCP port 4444 for an incoming connection,
+	daemon listen on TCP port 2159 (registered port number for the
+	gdb remote protocol) for an incoming connection,
 	if a string is passed, it must be the path to a serial
 	device, e.g., {\tt /dev/ttyS1}.
 
@@ -282,7 +283,7 @@ don't know if this is the recommended way, though. YMMV.
 
 	The syntax for connecting to a target is (TCP)
 \begin{verbatim}
-		(gdb) target rtems-remote <target>:4444
+		(gdb) target rtems-remote <target>:2159
 \end{verbatim}
 	or
 \begin{verbatim}
@@ -347,7 +348,7 @@ don't know if this is the recommended way, though. YMMV.
 	only interrupts the `dummy'/`helper' thread and
 	attaches GDB to it.  I.e., 
 \begin{verbatim}
-		target rtems-remote xx:4444 //connect, attach to 'helper'
+		target rtems-remote xx:2159 //connect, attach to 'helper'
 \end{verbatim}
 	At this point, the helper is stopped - you can inspect its
 	registers etc. everyone else continues normally
@@ -469,7 +470,7 @@ a list of loaded objects and their section addresses.
 \end{verbatim}
 	Connect to the target
 \begin{verbatim}
-		(gdb) target rtems-remote <target>:4444
+		(gdb) target rtems-remote <target>:2159
 		// gdb obtains object file list and searches
         // PATH for 'blah.o'
 \end{verbatim}

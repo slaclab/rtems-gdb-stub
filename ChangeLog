@@ -1,4 +1,8 @@
 Changes since release 1.2:
+  T.S: 2006/6/27
+  - changed port number from 4444 (leftover from early development lazyness)
+    to the officially registered 2159. Thanks to Wolfram Wadepohl for reporting
+    this.
 Changes since release 1.1:
   T.S: 2006/6/16:
   - switch_stack: free list pointer MUST be declared to point to ALIGNED structs

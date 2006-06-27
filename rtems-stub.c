@@ -102,7 +102,7 @@ volatile int rtems_remote_debug = MSG_INFO | MSG_ERROR /* | DEBUG_SCHED | DEBUG_
 /* Configuration Defs    */
 #define CTRLC             3
 #define RTEMS_GDB_Q_LEN 200
-#define RTEMS_GDB_PORT 4444
+#define RTEMS_GDB_PORT 2159
 
 /* Adjust buffer sizes   */
 #if (EXTRABUFSZ+15) > NUMREGBYTES
