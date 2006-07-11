@@ -124,6 +124,8 @@ static volatile signed char	initialized = 0;
 #include "crc32.c"
 
 STATIC rtems_id gdb_pending_id = 0;
+/* semaphore to synchronize with startup of the daemon */
+STATIC volatile rtems_id gdb_sync_id = 0;
 
 int rtems_gdb_pending = 0;
 
@@ -497,7 +499,7 @@ int rval, do_free;
 	if ( tid ) {
 		m = threadOnListBwd(&stopped, tid);
 		if ( m ) {
-			DBGMSG(DEBUG_SLIST, "stopped: removed %x\n", m->tid);
+			DBGMSG(DEBUG_SLIST, "stopped: removed %x\n", (unsigned)m->tid);
 			cdll_remove_el(&m->node);
 			/* see comment below why we use 'do_free' */
 			do_free = (m->frm == 0);
@@ -507,14 +509,14 @@ int rval, do_free;
 				msgFree(m);
 			}
 		} else {
-			ERRMSG("Unable to resume 0x%08x -- not found on stopped list\n", tid);
+			ERRMSG("Unable to resume 0x%08x -- not found on stopped list\n", (unsigned)tid);
 			rval = -1;
 		}
 	} else {
 		rval = 0;
 		/* release all currently stopped threads */
 		while ( (m=msgHeadDeQ(&stopped)) ) {
-			DBGMSG(DEBUG_SLIST, "stopped: removed %x from head\n", m->tid);
+			DBGMSG(DEBUG_SLIST, "stopped: removed %x from head\n", (unsigned)m->tid);
 			do_free = (m->frm == 0);
 			/* cannot access 'msg' after resuming. If it
 			 * was a 'real', i.e., non-frameless message then
@@ -522,7 +524,7 @@ int rval, do_free;
 			 * thread.
 			 */
 			if ( task_resume(m, sig) ) {
-				DBGMSG(DEBUG_SCHED, "Task resume %x FAILURE\n",m->tid);
+				DBGMSG(DEBUG_SCHED, "Task resume %x FAILURE\n",(unsigned)m->tid);
 				rval = -1;
 			}
 			if ( do_free ) {
@@ -761,7 +763,7 @@ int               pri   = 0, i = 0;
 			}
 			}
 			if ( state && i < EXTRABUFSZ ) {
-				i+=snprintf(extrabuf+i, EXTRABUFSZ-i, "?? (0x%x)", state);
+				i+=snprintf(extrabuf+i, EXTRABUFSZ-i, "?? (0x%x)", (unsigned)state);
 			}
 		}
 	}
@@ -799,6 +801,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
   char				*msg = 0;
   struct termios	*oldatts = 0;
   int				old_msg_lvl = 0;
+  int				post_sync = (gdb_sync_id != 0);
   /* startup / initialization */
   {
     if ( RTEMS_SUCCESSFUL !=
@@ -870,7 +873,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	if ( !ttyName ) {
 		struct sockaddr_in a;
 		/* FIXME: should use socklen_t but older (4.6.2) RTEMS doesn't have it */
-		unsigned           a_s = sizeof(a);
+		uint32_t           a_s = sizeof(a);
 		if ( (sd = accept(rtems_gdb_sd, (struct sockaddr *)&a, &a_s)) < 0 ) {
 			msg = "accept";
 			goto cleanup;
@@ -950,6 +953,12 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
 	cont_tid = 0;
 
+	if ( post_sync ) {
+		/* tell interesting caller that we are ready */
+		rtems_semaphore_release( gdb_sync_id );
+		post_sync = 0;
+	}
+
 	while ( (ptr = getpacket(remcomInBuffer)) ) {
 
     remcomOutBuffer[0] = 0;
@@ -965,7 +974,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	  break;
 
 	case '?':
-	  sprintf(remcomOutBuffer,"T%02xthread:%08x;",current->sig, current->tid);
+	  sprintf(remcomOutBuffer,"T%02xthread:%08x;",current->sig, (unsigned)current->tid);
 	  break;
 
 	case 'd':
@@ -1005,7 +1014,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
     case 'H':
       {
 		tid = strtol(ptr+1,0,16);
-		DBGMSG(DEBUG_SCHED, "New 'H%c' thread id set: 0x%08x\n",*ptr,tid);
+		DBGMSG(DEBUG_SCHED, "New 'H%c' thread id set: 0x%08x\n",*ptr,(unsigned)tid);
 	  	if ( 'c' == *ptr ) {
 			/* We actually have slightly different semantics.
 			 * In our case, this TID tells us whether we break
@@ -1415,6 +1424,9 @@ cleanup:
 	free(current);
 
   rtems_gdb_tid=0;
+
+  if ( post_sync )
+	rtems_semaphore_release( gdb_sync_id );
   if ( !foreground )
   	rtems_task_delete(RTEMS_SELF);
 }
@@ -1502,6 +1514,7 @@ int
 rtems_gdb_start(int pri, char *ttyName)
 {
 unsigned ticks_per_sec;
+rtems_status_code sc;
 
 	if ( rtems_gdb_tid ) {
 		fprintf(stderr,"GDB daemon already running. Use 'rtems_gdb_stop()'\n");
@@ -1544,7 +1557,25 @@ unsigned ticks_per_sec;
 		rtems_gdb_daemon((rtems_task_argument)ttyName);
 	} else {
 		foreground = 0;
+		if ( RTEMS_SUCCESSFUL != ( sc = rtems_semaphore_create(
+					rtems_build_name( 'g','d','b','s' ),
+					0,
+					RTEMS_FIFO | RTEMS_SIMPLE_BINARY_SEMAPHORE,
+					0,
+					(rtems_id*)&gdb_sync_id ) ) ) {
+			gdb_sync_id = 0;
+			rtems_error( sc, "GDB: unable to create synchronization semaphore" );
+			return -1;
+		}
 		rtems_gdb_tid = rtems_gdb_thread_helper("GDBd", pri, 20000+RTEMS_MINIMUM_STACK_SIZE, rtems_gdb_daemon, (rtems_task_argument)ttyName);
+
+		/* synchronize with daemon startup - thanks to Keith Robertson for pointing out that
+		 * the caller of rtems_gdb_start() could insert a breakpoint which would be hit before
+		 * the helper thread enqueues its first message -> assertion failure (line 866)
+		 */
+		assert( RTEMS_SUCCESSFUL == rtems_semaphore_obtain(gdb_sync_id, RTEMS_NO_WAIT, RTEMS_NO_TIMEOUT) );
+		assert( RTEMS_SUCCESSFUL == rtems_semaphore_delete( gdb_sync_id ) );
+		gdb_sync_id = 0;
 	}
 #ifdef DEBUG_SECOND_THREAD
 	blah_tid = rtems_gdb_thread_helper("blah", 200, RTEMS_MINIMUM_STACK_SIZE, blah, 0);
@@ -1609,7 +1640,7 @@ task_resume(RtemsDebugMsg msg, int sig)
 {
 rtems_status_code sc = -1;
 
-	DBGMSG(DEBUG_SCHED, "task_resume(%08x, %2i)\n",msg->tid, sig);
+	DBGMSG(DEBUG_SCHED, "task_resume(%08x, %2i)\n",(unsigned)msg->tid, sig);
 
 	if ( msg->tid ) {
 
@@ -1644,7 +1675,7 @@ rtems_status_code sc = -1;
 				|| 0 == rtems_gdb_tgt_single_step(msg)
 	   */
 			   ) {
-				DBGMSG(DEBUG_SCHED, "Resuming 0x%08x with sig %i\n",msg->tid, msg->contSig);
+				DBGMSG(DEBUG_SCHED, "Resuming 0x%08x with sig %i\n",(unsigned)msg->tid, msg->contSig);
 				sc = rtems_task_resume(msg->tid);
 			}
 			return RTEMS_SUCCESSFUL == sc ? 0 : -2;
@@ -1675,7 +1706,7 @@ rtems_status_code sc = -1;
 static RtemsDebugMsg
 task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 {
-	DBGMSG(DEBUG_SCHED, "SWITCH 0x%08x -> 0x%08x\n", cur ? cur->tid : 0, new_tid);
+	DBGMSG(DEBUG_SCHED, "SWITCH 0x%08x -> 0x%08x\n", cur ? (unsigned)cur->tid : 0, (unsigned)new_tid);
 
 	assert( new_tid );
 
@@ -1748,11 +1779,11 @@ task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 	/* bring to head of stopped list */
 	if ( threadOnListBwd(&stopped, cur->tid) ) {
 		/* remove */
-		DBGMSG(DEBUG_SLIST, "stopped list: removing %x\n", cur->tid);
+		DBGMSG(DEBUG_SLIST, "stopped list: removing %x\n", (unsigned)cur->tid);
 		cdll_remove_el(&cur->node);
 	}
 	/* add to head */
-	DBGMSG(DEBUG_SLIST, "stopped list: adding %x at head\n", cur->tid);
+	DBGMSG(DEBUG_SLIST, "stopped list: adding %x at head\n", (unsigned)cur->tid);
 	assert( cur->node.p == &cur->node && cur->node.n == &cur->node );
 	cdll_splerge_head(&stopped, (CdllNode)cur);
 return cur;
@@ -1957,7 +1988,7 @@ rtems_status_code	sc;
 	/* it also must be a single node; not on any list */
 	assert( msg->node.p == &msg->node && msg->node.n == &msg->node );
 
-	DBGMSG(DEBUG_SLIST, "stopped list: adding %x\n", msg->tid);
+	DBGMSG(DEBUG_SLIST, "stopped list: adding %x\n", (unsigned)msg->tid);
 
 	/* record this task on the stopped list */
 	cdll_splerge_head(&stopped, &msg->node);
@@ -2064,13 +2095,13 @@ RtemsDebugMsg msg;
 #ifdef DEBUGGING_ENABLED
   if (     (rtems_remote_debug & DEBUG_SCHED)
 		&& ! threadOnListBwd(&stopped, (*pcurrent)->tid ) ) {
-	fprintf(stderr, "OOPS: msg %p, tid %x stoppedp %p\n", msg, (*pcurrent)->tid, stopped.p);
+	fprintf(stderr, "OOPS: msg %p, tid %x stoppedp %p\n", msg, (unsigned)(*pcurrent)->tid, stopped.p);
   }
 #endif
   
   assert( threadOnListBwd(&stopped, (*pcurrent)->tid) );
 
-  sprintf(buf,"T%02xthread:%08x;",(*pcurrent)->sig, (*pcurrent)->tid);
+  sprintf(buf,"T%02xthread:%08x;",(*pcurrent)->sig, (unsigned)(*pcurrent)->tid);
 
 return 0;
 }
