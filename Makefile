@@ -119,7 +119,7 @@ endif
 
 # doesn't work if we define this just after OBJS= :-(
 # must be after inclusion of RTEMS_CUSTOM
-$(LIB): OBJS=$(filter-out %.modini.o,$(OBJS))
+$(LIB): OBJS:=$(filter-out %.modini.o,$(OBJS))
 
 $(LIB): $(OBJS)
 	$(make-library)
