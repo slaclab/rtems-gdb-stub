@@ -868,6 +868,11 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	helper_frame_pc = rtems_gdb_tgt_get_pc( theHelperMsg );
 	current = task_switch_to(0, helper_tid);
 
+	if ( post_sync ) {
+		/* tell caller of rtems_gdb_start() that we are ready */
+		rtems_semaphore_release( gdb_sync_id );
+		post_sync = 0;
+	}
 
 	/* startup / initialization */
 	if ( !ttyName ) {
@@ -952,12 +957,6 @@ rtems_gdb_daemon (rtems_task_argument arg)
 */
 
 	cont_tid = 0;
-
-	if ( post_sync ) {
-		/* tell interesting caller that we are ready */
-		rtems_semaphore_release( gdb_sync_id );
-		post_sync = 0;
-	}
 
 	while ( (ptr = getpacket(remcomInBuffer)) ) {
 
