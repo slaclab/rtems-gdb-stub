@@ -1,5 +1,5 @@
-*** ./gdb/config/i386/i386-ssrlrtems.mt.orig	2006-08-09 17:52:03.000000000 -0700
---- ./gdb/config/i386/i386-ssrlrtems.mt	2006-08-09 17:52:03.000000000 -0700
+*** gdb-6.5/gdb/config/i386/i386-ssrlrtems.mt.orig	2006-08-09 17:52:03.000000000 -0700
+--- gdb-6.5/gdb/config/i386/i386-ssrlrtems.mt	2006-08-09 17:52:03.000000000 -0700
 ***************
 *** 0 ****
 --- 1,4 ----
@@ -7,8 +7,8 @@
 + include $(srcdir)/config/i386/i386.mt
 + TDEPFILES+= corelow.o core-regset.o i386-rtemscore.o
 + DEPRECATED_TM_FILE=tm-i386-ssrlrtems.h
-*** ./gdb/config/i386/tm-i386-ssrlrtems.h.orig	2006-08-09 17:52:03.000000000 -0700
---- ./gdb/config/i386/tm-i386-ssrlrtems.h	2006-08-09 17:52:03.000000000 -0700
+*** gdb-6.5/gdb/config/i386/tm-i386-ssrlrtems.h.orig	2006-08-09 17:52:03.000000000 -0700
+--- gdb-6.5/gdb/config/i386/tm-i386-ssrlrtems.h	2006-08-09 17:52:03.000000000 -0700
 ***************
 *** 0 ****
 --- 1,41 ----
@@ -53,8 +53,8 @@
 + #define GDB_FPREGSET_T rtemscore_i386_fpregset_t
 + 
 + #endif /* defined TM_I386_SSRLRTEMS_H */
-*** ./gdb/config/m68k/m68k-monitor-ssrlrtems.mt.orig	2006-08-09 17:52:03.000000000 -0700
---- ./gdb/config/m68k/m68k-monitor-ssrlrtems.mt	2006-08-09 17:52:03.000000000 -0700
+*** gdb-6.5/gdb/config/m68k/m68k-monitor-ssrlrtems.mt.orig	2006-08-09 17:52:03.000000000 -0700
+--- gdb-6.5/gdb/config/m68k/m68k-monitor-ssrlrtems.mt	2006-08-09 17:52:03.000000000 -0700
 ***************
 *** 0 ****
 --- 1,4 ----
@@ -62,8 +62,8 @@
 + include $(srcdir)/config/m68k/monitor.mt
 + TDEPFILES+= corelow.o core-regset.o m68k-rtemscore.o
 + DEPRECATED_TM_FILE= tm-m68k-monitor-ssrlrtems.h
-*** ./gdb/config/m68k/tm-m68k-monitor-ssrlrtems.h.orig	2006-08-09 17:52:03.000000000 -0700
---- ./gdb/config/m68k/tm-m68k-monitor-ssrlrtems.h	2006-08-09 17:52:03.000000000 -0700
+*** gdb-6.5/gdb/config/m68k/tm-m68k-monitor-ssrlrtems.h.orig	2006-08-09 17:52:03.000000000 -0700
+--- gdb-6.5/gdb/config/m68k/tm-m68k-monitor-ssrlrtems.h	2006-08-09 17:52:03.000000000 -0700
 ***************
 *** 0 ****
 --- 1,44 ----
@@ -111,8 +111,8 @@
 + 
 + /* FIXME, should do GET_LONGJMP_TARGET for newlib.  */
 + #endif /* defined TM_M68K_SSRLRTEMS_H */
-*** ./gdb/config/powerpc/ppc-ssrlrtems.mt.orig	2006-08-09 17:52:03.000000000 -0700
---- ./gdb/config/powerpc/ppc-ssrlrtems.mt	2006-08-09 17:52:03.000000000 -0700
+*** gdb-6.5/gdb/config/powerpc/ppc-ssrlrtems.mt.orig	2006-08-09 17:52:03.000000000 -0700
+--- gdb-6.5/gdb/config/powerpc/ppc-ssrlrtems.mt	2006-08-09 17:52:03.000000000 -0700
 ***************
 *** 0 ****
 --- 1,4 ----
@@ -120,8 +120,8 @@
 + include $(srcdir)/config/powerpc/ppc-sim.mt
 + TDEPFILES+= corelow.o core-regset.o ppc32-rtemscore.o
 + DEPRECATED_TM_FILE= tm-ppc-ssrlrtems.h
-*** ./gdb/config/powerpc/tm-ppc-ssrlrtems.h.orig	2006-08-09 17:52:03.000000000 -0700
---- ./gdb/config/powerpc/tm-ppc-ssrlrtems.h	2006-08-09 17:52:03.000000000 -0700
+*** gdb-6.5/gdb/config/powerpc/tm-ppc-ssrlrtems.h.orig	2006-08-09 17:52:03.000000000 -0700
+--- gdb-6.5/gdb/config/powerpc/tm-ppc-ssrlrtems.h	2006-08-09 17:52:03.000000000 -0700
 ***************
 *** 0 ****
 --- 1,41 ----
@@ -166,8 +166,8 @@
 + 
 + 
 + #endif /* TM_PPC_SSRLRTEMS_H */
-*** ./gdb/configure.tgt.orig	2006-04-20 16:18:48.000000000 -0700
---- ./gdb/configure.tgt	2006-08-09 17:52:03.000000000 -0700
+*** gdb-6.5/gdb/configure.tgt.orig	2006-04-20 16:18:48.000000000 -0700
+--- gdb-6.5/gdb/configure.tgt	2006-08-09 17:52:03.000000000 -0700
 ***************
 *** 98,103 ****
 --- 98,104 ----
@@ -198,8 +198,8 @@
   powerpc*-*-*)		if test -f ../sim/ppc/Makefile; then
   			  gdb_target=ppc-sim
   			else
-*** ./gdb/i386-rtemscore.c.orig	2006-08-09 17:52:03.000000000 -0700
---- ./gdb/i386-rtemscore.c	2006-08-09 17:52:03.000000000 -0700
+*** gdb-6.5/gdb/i386-rtemscore.c.orig	2006-08-09 17:52:03.000000000 -0700
+--- gdb-6.5/gdb/i386-rtemscore.c	2006-08-09 17:52:03.000000000 -0700
 ***************
 *** 0 ****
 --- 1,35 ----
@@ -238,8 +238,8 @@
 + supply_fpregset (gdb_fpregset_t *gregsetp)
 + {
 + }
-*** ./gdb/m68k-rtemscore.c.orig	2006-08-09 17:52:03.000000000 -0700
---- ./gdb/m68k-rtemscore.c	2006-08-09 17:52:03.000000000 -0700
+*** gdb-6.5/gdb/m68k-rtemscore.c.orig	2006-08-09 17:52:03.000000000 -0700
+--- gdb-6.5/gdb/m68k-rtemscore.c	2006-08-09 17:52:03.000000000 -0700
 ***************
 *** 0 ****
 --- 1,30 ----
@@ -273,8 +273,8 @@
 + supply_fpregset (gdb_fpregset_t *gregsetp)
 + {
 + }
-*** ./gdb/Makefile.in.orig	2006-05-12 13:53:15.000000000 -0700
---- ./gdb/Makefile.in	2006-08-09 19:08:48.000000000 -0700
+*** gdb-6.5/gdb/Makefile.in.orig	2006-05-12 13:53:15.000000000 -0700
+--- gdb-6.5/gdb/Makefile.in	2006-08-09 19:08:48.000000000 -0700
 ***************
 *** 544,549 ****
 --- 544,550 ----
@@ -362,8 +362,8 @@
   	$(symfile_h) $(exceptions_h) $(target_h) $(gdbcmd_h) $(objfiles_h) \
   	$(gdb_stabs_h) $(gdbthread_h) $(remote_h) $(regcache_h) $(value_h) \
   	$(gdb_assert_h) $(event_loop_h) $(event_top_h) $(inf_loop_h) \
-*** ./gdb/ppc32-rtemscore.c.orig	2006-08-09 17:52:03.000000000 -0700
---- ./gdb/ppc32-rtemscore.c	2006-08-09 17:52:03.000000000 -0700
+*** gdb-6.5/gdb/ppc32-rtemscore.c.orig	2006-08-09 17:52:03.000000000 -0700
+--- gdb-6.5/gdb/ppc32-rtemscore.c	2006-08-09 17:52:03.000000000 -0700
 ***************
 *** 0 ****
 --- 1,33 ----
@@ -400,8 +400,8 @@
 + supply_fpregset (gdb_fpregset_t *gregsetp)
 + {
 + }
-*** ./gdb/remote.c.orig	2006-08-09 19:51:17.000000000 -0700
---- ./gdb/remote.c	2006-08-09 19:57:46.000000000 -0700
+*** gdb-6.5/gdb/remote.c.orig	2006-08-09 19:51:17.000000000 -0700
+--- gdb-6.5/gdb/remote.c	2006-08-09 19:57:46.000000000 -0700
 ***************
 *** 3182,3187 ****
 --- 3182,3189 ----
@@ -443,8 +443,8 @@
 + void
 + _initialize_remote_rtems (void);
 + #include "remote-rtems.c"
-*** ./gdb/remote-rtems.c.orig	2006-08-09 17:52:03.000000000 -0700
---- ./gdb/remote-rtems.c	2006-08-09 20:11:07.000000000 -0700
+*** gdb-6.5/gdb/remote-rtems.c.orig	2006-08-09 17:52:03.000000000 -0700
+--- gdb-6.5/gdb/remote-rtems.c	2006-08-09 20:11:07.000000000 -0700
 ***************
 *** 0 ****
 --- 1,618 ----
@@ -1066,8 +1066,8 @@
 +   add_target (&rtems_ops);
 +   init_rtems_cmds ();
 + }
-*** ./gdb/rs6000-tdep.c.orig	2006-04-23 07:15:01.000000000 -0700
---- ./gdb/rs6000-tdep.c	2006-08-09 17:52:03.000000000 -0700
+*** gdb-6.5/gdb/rs6000-tdep.c.orig	2006-04-23 07:15:01.000000000 -0700
+--- gdb-6.5/gdb/rs6000-tdep.c	2006-08-09 17:52:03.000000000 -0700
 ***************
 *** 1060,1066 ****
   	  continue;
@@ -1125,8 +1125,8 @@
   	    break;
   
   	  if (op == 0x4e800020		/* blr */
-*** ./gdb/thread.c.orig	2005-12-17 14:34:03.000000000 -0800
---- ./gdb/thread.c	2006-08-09 17:52:03.000000000 -0700
+*** gdb-6.5/gdb/thread.c.orig	2005-12-17 14:34:03.000000000 -0800
+--- gdb-6.5/gdb/thread.c	2006-08-09 17:52:03.000000000 -0700
 ***************
 *** 428,435 ****
   	printf_filtered (" (%s)", extra_info);
@@ -1154,8 +1154,8 @@
       }
   
     switch_to_thread (current_ptid);
-*** ./sim/ppc/hw_disk.c.orig	2002-09-27 14:02:14.000000000 -0700
---- ./sim/ppc/hw_disk.c	2006-08-09 17:52:03.000000000 -0700
+*** gdb-6.5/sim/ppc/hw_disk.c.orig	2002-09-27 14:02:14.000000000 -0700
+--- gdb-6.5/sim/ppc/hw_disk.c	2006-08-09 17:52:03.000000000 -0700
 ***************
 *** 200,205 ****
 --- 200,212 ----
