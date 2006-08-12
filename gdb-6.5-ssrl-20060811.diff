@@ -1,3 +1,6 @@
+ - rtems support for gdb-6.5
+ - NOTE: FIRST, bug #2154 has to be fixed (use 'gdb-6.5-fix-pr#2154.diff')
+
 *** gdb-6.5/gdb/config/i386/i386-ssrlrtems.mt.orig	2006-08-09 17:52:03.000000000 -0700
 --- gdb-6.5/gdb/config/i386/i386-ssrlrtems.mt	2006-08-09 17:52:03.000000000 -0700
 ***************
