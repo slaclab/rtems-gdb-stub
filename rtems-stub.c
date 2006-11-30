@@ -821,7 +821,10 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	}
 
 	if ( !ttyName ) {
-    struct sockaddr_in srv; 
+	  union {
+    	struct sockaddr_in sin; 
+		struct sockaddr    sa;
+	  } srv;
 
       /* create socket */
       rtems_gdb_sd = socket(PF_INET, SOCK_STREAM, 0);
@@ -835,10 +838,10 @@ rtems_gdb_daemon (rtems_task_argument arg)
       setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_REUSEADDR, &sarg, sizeof(sarg));
 
       memset(&srv, 0, sizeof(srv));
-      srv.sin_family = AF_INET;
-      srv.sin_port   = htons(RTEMS_GDB_PORT);
-      sarg           = sizeof(srv);
-      if ( bind(rtems_gdb_sd,(struct sockaddr *)&srv,sarg)<0 ) {
+      srv.sin.sin_family = AF_INET;
+      srv.sin.sin_port   = htons(RTEMS_GDB_PORT);
+      sarg           = sizeof(srv.sin);
+      if ( bind(rtems_gdb_sd,&srv.sa,sarg)<0 ) {
         msg="bind";
 		goto cleanup;
       };
@@ -876,10 +879,13 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
 	/* startup / initialization */
 	if ( !ttyName ) {
-		struct sockaddr_in a;
+		union {
+			struct sockaddr_in sin;
+			struct sockaddr    sa;
+		} a;
 		/* FIXME: should use socklen_t but older (4.6.2) RTEMS doesn't have it */
-		uint32_t           a_s = sizeof(a);
-		if ( (sd = accept(rtems_gdb_sd, (struct sockaddr *)&a, &a_s)) < 0 ) {
+		uint32_t           a_s = sizeof(a.sin);
+		if ( (sd = accept(rtems_gdb_sd, &a.sa, &a_s)) < 0 ) {
 			msg = "accept";
 			goto cleanup;
 		}
