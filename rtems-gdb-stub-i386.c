@@ -14,6 +14,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <signal.h>
 #include <assert.h>
 
@@ -310,7 +311,7 @@ int
 rtems_gdb_tgt_install_ehandler(int action)
 {
 int rval = 0, i;
-rtems_unsigned32 flags;
+uint32_t flags;
 
 	/* initialize breakpoint table */
 	for ( i=0; i<NUM_BPNTS-1; i++ )

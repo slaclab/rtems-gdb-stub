@@ -14,6 +14,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <signal.h>
 #include <assert.h>
 
@@ -368,7 +369,7 @@ rtems_gdb_tgt_install_ehandler(int action)
 {
 int rval = 0;
 #ifndef HAVE_LIBBSPEXT
-rtems_unsigned32 flags;
+uint32_t flags;
 
 	rtems_interrupt_disable(flags);
 	if ( action ) {
