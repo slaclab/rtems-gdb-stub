@@ -1,3 +1,11 @@
+Changes since release 1.3:
+  T.S: 2006-11-30
+ - fixed type-punning by using a union for sockaddr/sockaddr_in :(
+ - fixed other compiler warnings (mostly printf format details).
+ - replaced old rtems 'unsigned32' and similar types by stdint.
+  T.S: 2006-08-11
+ - BUGFIX: must release startup-synchronization semaphore prior to blocking for
+   connections (Thanks to Keith Robertson for reporting this).
 Changes since release 1.2:
   T.S: 2006/6/27
   - changed port number from 4444 (leftover from early development lazyness)
