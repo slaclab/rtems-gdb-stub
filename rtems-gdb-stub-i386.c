@@ -14,7 +14,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
+#include <inttypes.h>
 #include <signal.h>
 #include <assert.h>
 
@@ -91,6 +91,27 @@ rtems_gdb_tgt_regoff(int regno, int *poff)
     asm volatile("pushl %0; popl %%"#sr::"r"(val)); \
     } while (0)
 
+static void
+prframe(RtemsDebugFrame f)
+{
+	if ( !f ) {
+		fprintf(stderr,"dump frame info: NO FRAME\n");
+		return;
+	}
+	fprintf(stderr,"EDI 0x%08"PRIx32"\n", f->edi);
+	fprintf(stderr,"ESI 0x%08"PRIx32"\n", f->esi);
+	fprintf(stderr,"EBP 0x%08"PRIx32"\n", f->ebp);
+	fprintf(stderr,"ESP 0x%08"PRIx32"\n", f->esp0);
+	fprintf(stderr,"EBX 0x%08"PRIx32"\n", f->ebx);
+	fprintf(stderr,"EDX 0x%08"PRIx32"\n", f->edx);
+	fprintf(stderr,"ECX 0x%08"PRIx32"\n", f->ecx);
+	fprintf(stderr,"EAX 0x%08"PRIx32"\n", f->eax);
+	fprintf(stderr,"IDT 0x%08"PRIx32"\n", f->idtIndex);
+	fprintf(stderr,"FLT 0x%08"PRIx32"\n", f->faultCode);
+	fprintf(stderr,"EIP 0x%08"PRIx32"\n", f->eip);
+	fprintf(stderr,"CS  0x%08"PRIx32"\n", f->cs);
+	fprintf(stderr,"FLG 0x%08"PRIx32"\n", f->eflags);
+}
 
 
 /* map exception frame into register array (GDB layout) */
@@ -101,6 +122,11 @@ Thread_Control *tcb;
 RtemsDebugFrame f = msg->frm;
 int             deadbeef = 0xdeadbeef;
 unsigned long	val;
+
+#ifdef DEBUGGING_ENABLED
+	if ( rtems_remote_debug & DEBUG_SCHED )
+		prframe(f);
+#endif
 
 	memset(buf, 0, NUMREGBYTES);
 
@@ -125,7 +151,7 @@ unsigned long	val;
 	}
 
 	GETSR(CS,buf);
-	if ( f ) assert( f->cs == val );
+	if ( f ) assert( (f->cs & 0xffff) == (val & 0xffff) );
 	GETSR(SS,buf);
 	GETSR(DS,buf);
 	GETSR(ES,buf);

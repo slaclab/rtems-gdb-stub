@@ -22,6 +22,7 @@
 #include <assert.h>
 #include <ctype.h>
 #include <signal.h>
+#include <inttypes.h>
 
 #ifdef HAVE_CEXP
 #include <cexp.h>
@@ -499,7 +500,7 @@ int rval, do_free;
 	if ( tid ) {
 		m = threadOnListBwd(&stopped, tid);
 		if ( m ) {
-			DBGMSG(DEBUG_SLIST, "stopped: removed %lx\n", m->tid);
+			DBGMSG(DEBUG_SLIST, "stopped: removed %"PRIx32"\n", m->tid);
 			cdll_remove_el(&m->node);
 			/* see comment below why we use 'do_free' */
 			do_free = (m->frm == 0);
@@ -509,14 +510,14 @@ int rval, do_free;
 				msgFree(m);
 			}
 		} else {
-			ERRMSG("Unable to resume 0x%08lx -- not found on stopped list\n", tid);
+			ERRMSG("Unable to resume 0x%08"PRIx32" -- not found on stopped list\n", tid);
 			rval = -1;
 		}
 	} else {
 		rval = 0;
 		/* release all currently stopped threads */
 		while ( (m=msgHeadDeQ(&stopped)) ) {
-			DBGMSG(DEBUG_SLIST, "stopped: removed %lx from head\n", m->tid);
+			DBGMSG(DEBUG_SLIST, "stopped: removed %"PRIx32" from head\n", m->tid);
 			do_free = (m->frm == 0);
 			/* cannot access 'msg' after resuming. If it
 			 * was a 'real', i.e., non-frameless message then
@@ -524,7 +525,7 @@ int rval, do_free;
 			 * thread.
 			 */
 			if ( task_resume(m, sig) ) {
-				DBGMSG(DEBUG_SCHED, "Task resume %lx FAILURE\n",m->tid);
+				DBGMSG(DEBUG_SCHED, "Task resume %"PRIx32" FAILURE\n",m->tid);
 				rval = -1;
 			}
 			if ( do_free ) {
@@ -763,7 +764,7 @@ int               pri   = 0, i = 0;
 			}
 			}
 			if ( state && i < EXTRABUFSZ ) {
-				i+=snprintf(extrabuf+i, EXTRABUFSZ-i, "?? (0x%lx)", state);
+				i+=snprintf(extrabuf+i, EXTRABUFSZ-i, "?? (0x%"PRIx32")", state);
 			}
 		}
 	}
@@ -979,7 +980,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	  break;
 
 	case '?':
-	  sprintf(remcomOutBuffer,"T%02xthread:%08lx;",current->sig, current->tid);
+	  sprintf(remcomOutBuffer,"T%02xthread:%08"PRIx32";",current->sig, current->tid);
 	  break;
 
 	case 'd':
@@ -1019,7 +1020,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
     case 'H':
       {
 		tid = strtol(ptr+1,0,16);
-		DBGMSG(DEBUG_SCHED, "New 'H%c' thread id set: 0x%08lx\n",*ptr,tid);
+		DBGMSG(DEBUG_SCHED, "New 'H%c' thread id set: 0x%08"PRIx32"\n",*ptr,tid);
 	  	if ( 'c' == *ptr ) {
 			/* We actually have slightly different semantics.
 			 * In our case, this TID tells us whether we break
@@ -1164,7 +1165,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			if ( 0 == setjmp(remcomEnv) ) {
 				rtems_gdb_handle_exception = dolj;
 				/* try to compute crc */
-				sprintf(remcomOutBuffer,"C%lx",crc32((unsigned char*)addr, len, -1));
+				sprintf(remcomOutBuffer,"C%"PRIx32"",crc32((unsigned char*)addr, len, -1));
 			} else {
 	      		strcpy (remcomOutBuffer, "E03");
 	      		ERRMSG("bus error\n");
@@ -1645,7 +1646,7 @@ task_resume(RtemsDebugMsg msg, int sig)
 {
 rtems_status_code sc = -1;
 
-	DBGMSG(DEBUG_SCHED, "task_resume(%08lx, %2i)\n",msg->tid, sig);
+	DBGMSG(DEBUG_SCHED, "task_resume(%08"PRIx32", %2i)\n",msg->tid, sig);
 
 	if ( msg->tid ) {
 
@@ -1680,7 +1681,7 @@ rtems_status_code sc = -1;
 				|| 0 == rtems_gdb_tgt_single_step(msg)
 	   */
 			   ) {
-				DBGMSG(DEBUG_SCHED, "Resuming 0x%08lx with sig %i\n",msg->tid, msg->contSig);
+				DBGMSG(DEBUG_SCHED, "Resuming 0x%08"PRIx32" with sig %i\n",msg->tid, msg->contSig);
 				sc = rtems_task_resume(msg->tid);
 			}
 			return RTEMS_SUCCESSFUL == sc ? 0 : -2;
@@ -1711,7 +1712,7 @@ rtems_status_code sc = -1;
 static RtemsDebugMsg
 task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 {
-	DBGMSG(DEBUG_SCHED, "SWITCH 0x%08lx -> 0x%08lx\n", cur ? cur->tid : 0, new_tid);
+	DBGMSG(DEBUG_SCHED, "SWITCH 0x%08"PRIx32" -> 0x%08"PRIx32"\n", cur ? cur->tid : 0, new_tid);
 
 	assert( new_tid );
 
@@ -1784,11 +1785,11 @@ task_switch_to(RtemsDebugMsg cur, rtems_id new_tid)
 	/* bring to head of stopped list */
 	if ( threadOnListBwd(&stopped, cur->tid) ) {
 		/* remove */
-		DBGMSG(DEBUG_SLIST, "stopped list: removing %lx\n", cur->tid);
+		DBGMSG(DEBUG_SLIST, "stopped list: removing %"PRIx32"\n", cur->tid);
 		cdll_remove_el(&cur->node);
 	}
 	/* add to head */
-	DBGMSG(DEBUG_SLIST, "stopped list: adding %lx at head\n", cur->tid);
+	DBGMSG(DEBUG_SLIST, "stopped list: adding %"PRIx32" at head\n", cur->tid);
 	assert( cur->node.p == &cur->node && cur->node.n == &cur->node );
 	cdll_splerge_head(&stopped, (CdllNode)cur);
 return cur;
@@ -1993,7 +1994,7 @@ rtems_status_code	sc;
 	/* it also must be a single node; not on any list */
 	assert( msg->node.p == &msg->node && msg->node.n == &msg->node );
 
-	DBGMSG(DEBUG_SLIST, "stopped list: adding %lx\n", msg->tid);
+	DBGMSG(DEBUG_SLIST, "stopped list: adding %"PRIx32"\n", msg->tid);
 
 	/* record this task on the stopped list */
 	cdll_splerge_head(&stopped, &msg->node);
@@ -2100,13 +2101,13 @@ RtemsDebugMsg msg;
 #ifdef DEBUGGING_ENABLED
   if (     (rtems_remote_debug & DEBUG_SCHED)
 		&& ! threadOnListBwd(&stopped, (*pcurrent)->tid ) ) {
-	fprintf(stderr, "OOPS: msg %p, tid %lx stoppedp %p\n", msg, (*pcurrent)->tid, stopped.p);
+	fprintf(stderr, "OOPS: msg %p, tid %"PRIx32" stoppedp %p\n", msg, (*pcurrent)->tid, stopped.p);
   }
 #endif
   
   assert( threadOnListBwd(&stopped, (*pcurrent)->tid) );
 
-  sprintf(buf,"T%02xthread:%08lx;",(*pcurrent)->sig, (*pcurrent)->tid);
+  sprintf(buf,"T%02xthread:%08"PRIx32";",(*pcurrent)->sig, (*pcurrent)->tid);
 
 return 0;
 }
