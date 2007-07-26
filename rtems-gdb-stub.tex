@@ -6,6 +6,7 @@
 \newcommand{\cmd}[1]{{\tt #1}}
 
 \newcommand{\nix}{}
+\newcommand{\bul}{$\bullet$}
 
 \begin{htmlonly}
 \renewcommand{\nix}{
@@ -21,7 +22,7 @@
 \title{GDB Agent for RTEMS}
 
 \author{Till Straumann $<$strauman$|$at$|$slac.stanford.edu$>$}
-\date{3/14/2005; last modified 6/27/2006\\
+\date{3/14/2005; last modified 7/26/2007\\
 \nix
 }
 
@@ -127,12 +128,15 @@ as small and as modular as possible.
 For the prerequisites consult table~\ref{tbl:prereq}
 \begin{table}
 \begin{center}
-\begin{tabular}{ll}
-host: & download and unpack gdb-6.4\\
-      & patches distributed with rtems-gdb-stub\\
-      & {\em SLAC Alternative: check out from SSRL CVS Repository}\\
-target: & (optional) libbspExt $>=$ version 1.3\\
-        & (optional) CEXP $>=$ version 1.5.beta
+\begin{tabular}{l@{\hspace{3em}\bul\hspace{0.5em}}l}
+host:   &\begin{minipage}[t]{9cm}\raggedright
+	    download and unpack gdb-6.6 (or any later version for which a patch
+		has been developed -- check the \protect{\verb4gdb-<version>-<date>.diff4}
+		patches distributed with rtems-gdb-stub
+		\end{minipage} \\
+		&patches distributed with rtems-gdb-stub \\
+target: &(optional) libbspExt $>=$ version 1.3    \\
+		&(optional) CEXP $>=$ version 1.5.beta
 \end{tabular}
 \caption{Prerequisites}
 \label{tbl:prereq}
@@ -184,7 +188,8 @@ target: & (optional) libbspExt $>=$ version 1.3\\
 \item
   As with any RTEMS application, you must not forget to link all
   required RTEMS managers -- otherwise you incur what seem to be
-  obscure errors. If memory is not an issue then choosing
+  obscure errors. If you have plenty of memory then simply including
+  all managers by setting
   {\tt MANAGERS=all} in your {\tt Makefile} is most comfortable.
   
 \end{itemize}
@@ -386,7 +391,7 @@ on the target. For example,
 invokes the \cmd{printf} routine on the target, retrieves the return value
 and prints it to the \cmd{gdb} console.
 
-This is actually a pretty complex operation involving creating a dummy stack
+This is actually a pretty complex operation which involves creating a dummy stack
 frame and appropriate arguments etc. on the target. Some targets' exception
 handlers may not expect modifications of the stack and might crash as a result
 of an attempt to call a routine on the target.
