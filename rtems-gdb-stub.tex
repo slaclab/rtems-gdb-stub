@@ -6,7 +6,7 @@
 \newcommand{\cmd}[1]{{\tt #1}}
 
 \newcommand{\nix}{}
-\newcommand{\bul}{$\bullet$}
+\newcommand{\bul}{$\bullet$\hspace{.5em}}
 
 \begin{htmlonly}
 \renewcommand{\nix}{
@@ -128,16 +128,26 @@ as small and as modular as possible.
 For the prerequisites consult table~\ref{tbl:prereq}
 \begin{table}
 \begin{center}
-\begin{tabular}{l@{\hspace{3em}\bul\hspace{0.5em}}l}
-host:   &\begin{minipage}[t]{9cm}\raggedright
-	    download and unpack gdb-6.6 (or any later version for which a patch
-		has been developed -- check the \protect{\verb4gdb-<version>-<date>.diff4}
-		patches distributed with rtems-gdb-stub
-		\end{minipage} \\
-		&patches distributed with rtems-gdb-stub \\
-target: &(optional) libbspExt $>=$ version 1.3    \\
-		&(optional) CEXP $>=$ version 1.5.beta
-\end{tabular}
+%\begin{tabular}{l@{\hspace{3em}\bul\hspace{0.5em}}l}
+%host:   &\begin{minipage}[t]{9cm}\raggedright
+%	    download and unpack gdb-6.6 (or any later version for which a patch
+%		has been developed -- check the \protect{\verb4gdb-<version>-<date>.diff4}
+%		patches distributed with rtems-gdb-stub
+%		\end{minipage} \\
+%		&patches distributed with rtems-gdb-stub \\
+%target: &(optional) libbspExt $>=$ version 1.3    \\
+%		&(optional) CEXP $>=$ version 1.5.beta
+%\end{tabular}
+\begin{tabbing}
+target:\hspace{4em}\=\bul\= \kill
+host:  \> \bul \> download and unpack gdb-6.6 (or any later version \\
+       \>      \> for which a patch has been developed -- check the \\
+	   \>      \> \protect{\verb4gdb-<version>-<date>.diff4} patches distributed \\
+	   \>      \> with rtems-gdb-stub \\
+	   \> \bul \> patches distributed with rtems-gdb-stub \\
+target:\> \bul \> (optional) libbspExt $>=$ version 1.3  \\
+       \> \bul \> (optional) CEXP $>=$ version 1.5.beta
+\end{tabbing}
 \caption{Prerequisites}
 \label{tbl:prereq}
 \end{center}
