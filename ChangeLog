@@ -1,4 +1,13 @@
 Changes since release 1.4:
+  T.S: 2008-01-18
+  - rtems-gdb-stub-ppc-shared.c: added check for _SOFT_FLOAT - don't access
+    FP regs when compiled for arch that doesn't have any.
+  - refuse to break if _Thread_Dispatch_disable_level > 0 (this covers the
+    case of ISRs we had already protected against).
+  - added support for UDP connections
+  - allow 'ttyName' to be any type of device (not just termios). Silently
+    ignore failure to read/change/reset termios settings.
+  - now works nicely with lanIpBasic standalone IP/UDP stack :-)
 Changes since release 1.3:
   T.S: 2007-07-19
   - fix false-positive i386 paranoia check (current CS must be equal to

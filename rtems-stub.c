@@ -290,13 +290,11 @@ struct termios	newa;
 char			*msg=0;
 
 	if ( !isatty(fd) ) {
-		ERRMSG("File descriptor not a terminal\n");
 		return -1;
 	}
 	if ( olda && tcgetattr(fd, olda ) ) {
-		msg="getting old terminal attributes";
-		olda = 0;
-		goto bail;
+		/* perhaps this is not a termios device; fail silently... */
+		return -1;
 	}
 	memset(&newa,0,sizeof(newa));
 	/* Do what gdb does (ser-unix.c: hardwire_raw())
@@ -777,6 +775,37 @@ static void dolj(int signo)
 	longjmp(remcomEnv,1);
 }
 
+/* create and bind a socket to the GDB port */
+
+static int
+mksock(int type, char **perrmsg)
+{
+union {
+   	struct sockaddr_in sin; 
+	struct sockaddr    sa;
+} srv;
+socklen_t sl;
+int       sd;
+
+	/* create socket */
+	sd = socket(PF_INET, type, 0);
+	if ( sd < 0 ) {
+		*perrmsg = "socket";
+		return -1;
+	}
+
+    memset(&srv, 0, sizeof(srv));
+    srv.sin.sin_family = AF_INET;
+    srv.sin.sin_port   = htons(RTEMS_GDB_PORT);
+    sl                 = sizeof(srv.sin);
+	if ( bind(sd,&srv.sa,sl)<0 ) {
+		*perrmsg="bind";
+		close(sd);
+		return -1;
+	};
+	return sd;
+}
+
 
 /*
  * This function does all command processing for interfacing to gdb.
@@ -803,8 +832,15 @@ rtems_gdb_daemon (rtems_task_argument arg)
   struct termios	*oldatts = 0;
   int				old_msg_lvl = 0;
   int				post_sync = (gdb_sync_id != 0);
+  int               udp  = 0;
   /* startup / initialization */
+
   {
+    if ( !strcmp(ttyName,"UDP:") || !strcmp(ttyName,"udp:") ) {
+	  udp     = 1;
+	  ttyName = 0;
+	}
+
     if ( RTEMS_SUCCESSFUL !=
 		 ( sc = rtems_semaphore_create(
 					rtems_build_name( 'g','d','b','s' ),
@@ -821,31 +857,19 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		goto cleanup;
 	}
 
-	if ( !ttyName ) {
-	  union {
-    	struct sockaddr_in sin; 
-		struct sockaddr    sa;
-	  } srv;
+	if ( !ttyName && !udp ) {
 
       /* create socket */
-      rtems_gdb_sd = socket(PF_INET, SOCK_STREAM, 0);
+	  rtems_gdb_sd = mksock(SOCK_STREAM, &msg);	
 	  if ( rtems_gdb_sd < 0 ) {
-		msg="socket";
 		goto cleanup;
 	  }
 
 	  sarg = 1;
+
       setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_KEEPALIVE, &sarg, sizeof(sarg));
       setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_REUSEADDR, &sarg, sizeof(sarg));
 
-      memset(&srv, 0, sizeof(srv));
-      srv.sin.sin_family = AF_INET;
-      srv.sin.sin_port   = htons(RTEMS_GDB_PORT);
-      sarg           = sizeof(srv.sin);
-      if ( bind(rtems_gdb_sd,&srv.sa,sarg)<0 ) {
-        msg="bind";
-		goto cleanup;
-      };
 	  if ( listen(rtems_gdb_sd, 1) ) {
 		msg = "listen";
 		goto cleanup;
@@ -885,15 +909,36 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			struct sockaddr    sa;
 		} a;
 		/* FIXME: should use socklen_t but older (4.6.2) RTEMS doesn't have it */
-		uint32_t           a_s = sizeof(a.sin);
-		if ( (sd = accept(rtems_gdb_sd, &a.sa, &a_s)) < 0 ) {
-			msg = "accept";
-			goto cleanup;
-		}
-		sarg = 1;
-      	if ( setsockopt(sd, IPPROTO_TCP, TCP_NODELAY, &sarg, sizeof(sarg)) ) {
-			msg = "setsockopt TCP_NODELAY";
-			goto cleanup;
+		socklen_t a_s = sizeof(a.sin);
+
+		if ( !udp ) {
+			if ( (sd = accept(rtems_gdb_sd, &a.sa, &a_s)) < 0 ) {
+				msg = "accept";
+				goto cleanup;
+			}
+			sarg = 1;
+			if ( setsockopt(sd, IPPROTO_TCP, TCP_NODELAY, &sarg, sizeof(sarg)) ) {
+				msg = "setsockopt TCP_NODELAY";
+				goto cleanup;
+			}
+		} else {
+			char b;
+			if ( (rtems_gdb_sd = mksock(SOCK_DGRAM, &msg)) < 0 ) {
+				goto cleanup;
+			}
+			/* wait for something to arrive */
+			if ( recvfrom(rtems_gdb_sd, &b, 1, MSG_PEEK, &a.sa, &a_s) < 0 ) {
+				msg = "recvfrom";
+				goto cleanup;
+			}
+			/* 'connect' UDP socket to peer */
+			if ( connect(rtems_gdb_sd, &a.sa, a_s) ) {
+				msg = "connect";
+				goto cleanup;
+			}
+			/* hand over sd */
+			sd = rtems_gdb_sd;
+			rtems_gdb_sd = -1;
 		}
 	} else {
 		/* serial I/O */
@@ -947,8 +992,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			if ( setup_term(sd, oldatts) ) {
 				free(oldatts);
 				oldatts = 0;
-				close(sd);
-				goto cleanup;
+				/* continue; may be just some char device that can to I/O */
 			}
 		}
 	}
@@ -1818,6 +1862,7 @@ static void post_and_suspend(RtemsDebugMsg msg)
 	 * probably should check for 'local' node.
 	 */
 	while (1) {
+
 		rtems_task_suspend( msg->tid );
 
 		assert( !rtems_gdb_thread_is_dead(msg) );

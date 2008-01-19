@@ -22,6 +22,16 @@
 #include <bsp/bspExt.h>
 #endif
 
+/* handle older RTEMS versions */
+#if !defined(ASM_60X_IMISS_VECTOR) && defined(ASM_IMISS_VECTOR)
+#define ASM_60X_IMISS_VECTOR ASM_IMISS_VECTOR
+#endif
+#if !defined(ASM_60X_DLMISS_VECTOR) && defined(ASM_DLMISS_VECTOR)
+#define ASM_60X_DLMISS_VECTOR ASM_DLMISS_VECTOR
+#endif
+#if !defined(ASM_60X_DSMISS_VECTOR) && defined(ASM_DSMISS_VECTOR)
+#define ASM_60X_DSMISS_VECTOR ASM_DSMISS_VECTOR
+#endif
 
 #define get_tcb(tid) rtems_gdb_get_tcb_dispatch_off(tid)
 
@@ -123,11 +133,13 @@ int            deadbeef = 0xdeadbeef, i;
 	}
 
 	if ( (tcb = get_tcb(msg->tid)) ) {
+#ifndef _SOFT_FLOAT
 		Context_Control_fp *fpc = tcb->fp_context;
 		if ( fpc ) {
 			memcpy(buf + FPR0_OFF, &fpc->f[0], 32*8 );
 			memcpy(buf + FPSCR_OFF, &fpc->fpscr, 4);
 		}
+#endif
 		if (!f) {
 			Frame        sfr = (Frame)tcb->Registers.gpr1;
 			unsigned pcdummy = tcb->Registers.pc - 4;
@@ -162,12 +174,14 @@ Thread_Control *tcb = 0;
 	}
 
 	if ( msg->tid && (tcb = get_tcb(msg->tid)) ) {
+#ifndef _SOFT_FLOAT
 		Context_Control_fp *fpc = tcb->fp_context;
 		if ( fpc ) {
 			memcpy(&fpc->f[0],   buf+FPR0_OFF,    32*8 );
 			memset(&fpc->fpscr,  0,               sizeof(fpc->fpscr));
 			memcpy(&fpc->fpscr,  buf + FPSCR_OFF, 4);
 		}
+#endif
 		if ( !f ) {
 			/* setup TCB */
 			memcpy(&tcb->Registers.gpr1,  buf + (GPR0_OFF + 4),         2 *4);
@@ -224,11 +238,21 @@ static struct {
 } stepOverState = { -1,0,0 };
 RtemsDebugMsgRec msg;
 
-	if (   rtems_interrupt_is_in_progress()
-	    || !_Thread_Executing 
+	if (   !_Thread_Executing 
 		|| (RTEMS_SUCCESSFUL!=rtems_task_ident(RTEMS_SELF,RTEMS_LOCAL, &msg.tid)) ) {
 		/* unable to deal with this situation */
 		return -1;
+	}
+
+	if ( _Thread_Dispatch_disable_level > 1 ) {
+		switch ( f->_EXC_number ) {
+			case ASM_SYS_VECTOR:
+			case ASM_TRACE_VECTOR:
+				printk("rtems-gdb-stub: Fatal Error\n");
+				printk("Cannot break into thread-dispatch disabled code or ISR\n");
+			default:
+				return -1;
+		}
 	}
 
 	KDBGMSG(DEBUG_SCHED, "Task %x got exception %i, frame %x, GPR1 %x, IP %x\n\n",
@@ -247,9 +271,9 @@ RtemsDebugMsgRec msg;
 		case ASM_PROT_VECTOR     :
 		case ASM_ISI_VECTOR      :
 		case ASM_ALIGN_VECTOR    :  
-		case ASM_IMISS_VECTOR    :
-		case ASM_DLMISS_VECTOR   :
-		case ASM_DSMISS_VECTOR   :
+		case ASM_60X_IMISS_VECTOR    :
+		case ASM_60X_DLMISS_VECTOR   :
+		case ASM_60X_DSMISS_VECTOR   :
 			msg.sig = SIGSEGV;
 		break;
 
@@ -308,6 +332,7 @@ RtemsDebugMsgRec msg;
 
 		default: break;
 	}
+#ifndef _SOFT_FLOAT
 	if (f->EXC_SRR1 & MSR_FP) {
 		/* thread dispatching is _not_ disabled at this point; hence
 		 * we must make sure we have the FPU enabled...
@@ -316,6 +341,7 @@ RtemsDebugMsgRec msg;
 		_write_MSR( _read_MSR() | MSR_FP );
 		__asm__ __volatile__("isync");
 	}
+#endif
 
 	if ( rtems_gdb_notify_and_suspend(&msg) ) {
 		return -1;

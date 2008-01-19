@@ -289,8 +289,8 @@ don't know if this is the recommended way, though. YMMV.
 	on which another task is blocking.
 
 \subsection{Connecting to the Target}
-	gdb can use either serial-port or TCP connections. Note
-	that either uses certain resources on the target (e.g.,
+	gdb can use either serial-port, TCP or UDP connections.
+	Note that either uses certain resources on the target (e.g.,
 	the termios driver or the TCP/IP stack, respectively)
 	and a debugging session may deadlock the system if
 	the debugging agent needs a resource that is locked
@@ -306,6 +306,18 @@ don't know if this is the recommended way, though. YMMV.
 \end{verbatim}
 	(serial) -- note that the agent's serial port runs at
 	115200 8N1 -- use GDB's \cmd{remote baud} command.
+
+	UDP connections can also be used but gdb warns against
+	them being less reliable. There is usually no point
+	using UDP if TCP is available. One important exception
+	would be if the target features a ``standalone'' UDP
+	communication channel (e.g., a simple ethernet/IP/UDP
+	packet driver/stack; such a driver/stack could be
+	used to debug TCP/IP itself) or has reduced networking
+	capabilities.
+\begin{verbatim}
+		(gdb) target rtems-remote udp:<target>:2159
+\end{verbatim}
 
 	Note that \cmd{rtems-remote} is an extension of the
 	standard GDB `remote' target -- it adds support
