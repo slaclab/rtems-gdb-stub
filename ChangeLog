@@ -1,4 +1,10 @@
 Changes since release 1.4:
+  T.S: 2008-03-20
+  Fixes to let it build for different RTEMS versions (4.6.5 .. 4.8.99):
+  - crc32.c  use 'uint32_t instead of 'unsigned long'
+  - added version-check macro to rtems-stub.c; several features 
+    (copying/retrieving object names) and data types (uint32_t, socklen_t,
+    PRIx32 format) have changed over time.
   T.S: 2008-01-18
   - rtems-gdb-stub-ppc-shared.c: added check for _SOFT_FLOAT - don't access
     FP regs when compiled for arch that doesn't have any.

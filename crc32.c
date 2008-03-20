@@ -25,15 +25,17 @@
 
 /* Table used by the crc32 function to calcuate the checksum. */
 
-static unsigned long crc32_table[256] =
+#include <stdint.h>
+
+static uint32_t crc32_table[256] =
 {0, 0};
 
 /* Initialize the CRC table and the decoding table. */
 static void
-crc32_init(unsigned long *crc32_table)
+crc32_init(uint32_t *crc32_table)
 {
 int i, j;
-unsigned int c;
+uint32_t c;
 
 	for (i = 0; i < 256; i++) {
 		for (c = i << 24, j = 8; j > 0; --j)
@@ -42,8 +44,8 @@ unsigned int c;
 	}
 }
 
-static unsigned long
-crc32 (unsigned char *buf, int len, unsigned int crc)
+static uint32_t
+crc32 (unsigned char *buf, int len, uint32_t crc)
 {
  while (len--)
     {

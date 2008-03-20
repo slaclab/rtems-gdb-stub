@@ -38,6 +38,23 @@
 #define STATIC static
 #endif
 
+/* Version/feature check :-( */
+
+#define ISMINVERSION(ma,mi,re) \
+	(    __RTEMS_MAJOR__  > (ma)	\
+	 || (__RTEMS_MAJOR__ == (ma) && __RTEMS_MINOR__  > (mi))	\
+	 || (__RTEMS_MAJOR__ == (ma) && __RTEMS_MINOR__ == (mi) && __RTEMS_REVISION__ >= (re)) \
+    )
+
+#if !defined PRIx32 /* pre 4.7.0 RTEMS */
+#define PRIx32 "x"
+#endif
+
+#if !ISMINVERSION(4,6,99)
+typedef uint32_t socklen_t;
+#endif
+
+
 #if defined(__PPC__)
 #include "rtems-gdb-stub-ppc-shared.h"
 #elif defined(__i386__)
@@ -654,15 +671,19 @@ int               pri   = 0, i = 0;
 	memset(extrabuf,0,EXTRABUFSZ);
 	if ( (thr=_Thread_Get( tid, &l )) ) {
 		if ( OBJECTS_LOCAL == l ) {
+			*extrabuf = '\'';
+#if ISMINVERSION(4,8,99)
+			_Objects_Get_name_as_string( tid, EXTRABUFSZ - 1 , extrabuf + 1 );
+#else
+			{
 			Objects_Information *oi;
 			oi = _Objects_Get_information( tid );
-			*extrabuf = '\'';
 			if ( oi->is_string ) {
 				if ( oi->name_length < EXTRABUFSZ ) {
-#if 0 /* 4.6.99 _Objects_Copy_name_string has a 3rd 'length' argument... */
-					_Objects_Copy_name_string( thr->Object.name, extrabuf + 1  );
-#else
+#if ISMINVERSION(4,6,99) /* 4.6.99 _Objects_Copy_name_string has a 3rd 'length' argument... */
 					_Objects_Copy_name_raw( thr->Object.name, extrabuf + 1, oi->name_length );
+#else
+					_Objects_Copy_name_string( thr->Object.name, extrabuf + 1  );
 #endif
 				} else {
 					strcpy( extrabuf + 1, "NAME TOO LONG" ); 
@@ -685,6 +706,8 @@ int               pri   = 0, i = 0;
 #error unknown CPU endianness
 #endif
 			}
+			}
+#endif
 			state = thr->current_state;
 			pri   = thr->real_priority;
 		}
