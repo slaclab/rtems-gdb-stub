@@ -1,4 +1,8 @@
 Changes since release 1.4:
+  T.S: 2008-04-30
+  - rtems-gdb-stub-m68k.c: fixed some compiler warnings (printf format
+    types using inttypes.h. Unfortunately, rtems-4.7 uses 64-bit types
+	for intptr_t so there remain ugly casts of void*->uint32_t.
   T.S: 2008-04-10
   - BookE single-stepping mode is different from classic PPC. Implemented
     (quick+dirty for now).

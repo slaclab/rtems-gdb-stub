@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <assert.h>
+#include <inttypes.h>
 
 #define get_tcb(tid) rtems_gdb_get_tcb_dispatch_off(tid)
 
@@ -94,12 +95,12 @@ Context_Control r;
 	if ( (tcb = get_tcb(tid)) ) {
 		r = tcb->Registers;
 		_Thread_Enable_dispatch();
-		printf("D2: 0x%08x  ", r.d2); printf("D3: 0x%08x  ", r.d3); printf("D4: 0x%08x\n", r.d4);
-		printf("D5: 0x%08x  ", r.d5); printf("D6: 0x%08x  ", r.d6); printf("D7: 0x%08x\n", r.d7);
-		printf("A2: 0x%08x  ", (uint32_t)r.a2); printf("A3: 0x%08x  ", (uint32_t)r.a3); printf("A4: 0x%08x\n", (uint32_t)r.a4);
-		printf("A5: 0x%08x  ", (uint32_t)r.a5); printf("A6: 0x%08x  ", (uint32_t)r.a6); printf("\n");
+		printf("D2: 0x%08"PRIx32"  ", r.d2); printf("D3: 0x%08"PRIx32"  ", r.d3); printf("D4: 0x%08"PRIx32"\n", r.d4);
+		printf("D5: 0x%08"PRIx32"  ", r.d5); printf("D6: 0x%08"PRIx32"  ", r.d6); printf("D7: 0x%08"PRIx32"\n", r.d7);
+		printf("A2: 0x%08"PRIx32"  ", (uint32_t)r.a2); printf("A3: 0x%08"PRIx32"  ", (uint32_t)r.a3); printf("A4: 0x%08"PRIx32"\n", (uint32_t)r.a4);
+		printf("A5: 0x%08"PRIx32"  ", (uint32_t)r.a5); printf("A6: 0x%08"PRIx32"  ", (uint32_t)r.a6); printf("\n");
 
-		printf("SP: 0x%08x  PS: 0x%08x\n", (uint32_t)r.a7_msp, r.sr);
+		printf("SP: 0x%08"PRIx32"  PS: 0x%08"PRIx32"\n", (uint32_t)r.a7_msp, r.sr);
 		return 0;
 	}
 	return -1;
