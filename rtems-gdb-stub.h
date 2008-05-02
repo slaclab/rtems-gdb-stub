@@ -88,7 +88,8 @@ void rtems_gdb_breakpoint();
 
 /* start debugger thread with priority 'pri'
  * If no ttyName is passed (ttyName==0) socket
- * I/O is used
+ * I/O is used. If the ttyName is "UDP:" or "udp:"
+ * then an UDP socket is used.
  */
 int
 rtems_gdb_start(int pri, char *ttyName);
