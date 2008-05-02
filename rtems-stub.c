@@ -24,6 +24,10 @@
 #include <signal.h>
 #include <inttypes.h>
 
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
+
 #ifdef HAVE_CEXP
 #include <cexp.h>
 /* we do no locking - hope nobody messes with the
