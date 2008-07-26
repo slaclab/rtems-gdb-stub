@@ -62,15 +62,20 @@ typedef struct BpntRec_ {
 #define MSR_BOOKE_DE	(1<<(63-54))
 #endif
 
-#define DBSR	304
-#define DBCR0	308
+#define BOOKE_DBSR	304
+#define BOOKE_DBCR0	308
+
+#define PPC405_DBSR  0x3f0
+#define PPC405_DBCR0 0x3f2
 
 /* instruction complete */
 #define DBCR0_ICMP (1<<(63-36))
 #define DBCR0_IDM  (1<<(63-33))
 
-SPR_RW(DBSR)
-SPR_RW(DBCR0)
+SPR_RW(BOOKE_DBSR)
+SPR_RW(BOOKE_DBCR0)
+SPR_RW(PPC405_DBSR)
+SPR_RW(PPC405_DBCR0)
 
 static int isBookE = 0;
 
@@ -81,12 +86,12 @@ uint32_t mfmsr()
 
 uint32_t mfdbsr()
 {
-	return _read_DBSR();
+	return PPC_BOOKE_405 == isBookE ? _read_PPC405_DBSR() : _read_BOOKE_DBSR();
 }
 
 uint32_t mfdbcr0()
 {
-	return _read_DBCR0();
+	return PPC_BOOKE_405 == isBookE ? _read_PPC405_DBCR0() : _read_BOOKE_DBCR0();
 }
 
 #define NUM_BPNTS 32
@@ -100,8 +105,12 @@ static inline unsigned long
 do_patch(volatile unsigned long *addr, unsigned long val)
 {
 unsigned long rval;
+unsigned key;
 
 	rval = *addr;
+
+	rtems_interrupt_disable(key);
+
 	/* longjmp should restore MSR */
 	/* disable interrupts AND MMU to work around write-protection */
 	asm volatile(
@@ -115,8 +124,13 @@ unsigned long rval;
 		"	mtmsr 0			\n" /* msr is exec. synchr.; mem access completed       */
 		"   sync            \n" /* probably not necessary                           */
 		"	isync           \n" /* context sync.; MMU on after this                 */
-		::"r"(MSR_EE|MSR_DR), "b"(addr), "r"(val)
+		/* add 'key' to input operands to make sure this asm is not
+		 * moved around
+		 */
+		::"r"(isBookE ? 0 : MSR_DR), "b"(addr), "r"(val), "r"(key)
 		:"r0","r7");
+
+	rtems_interrupt_enable(key);
 	return rval;
 }
 
@@ -300,7 +314,11 @@ RtemsDebugMsgRec msg;
 
 	switch ( f->_EXC_number ) {
 		case ASM_MACH_VECTOR     :
+#if 0
 			_BSP_clear_hostbridge_errors(1,0);
+#else
+#warning TSILLXXXXXXXXXXXXXXX
+#endif
 			msg.sig = SIGBUS;
 		break;
 
@@ -411,12 +429,17 @@ RtemsDebugMsgRec msg;
 		 * Logically, execution 'resumes' in the
 		 * ASM_TRACE_VECTOR branch above
 		 */
-		f->EXC_SRR1 &= ~MSR_EE;
+		f->EXC_SRR1 &= ~ppc_interrupt_get_disable_mask();
 		if ( isBookE ) {
 			f->EXC_SRR1 |= MSR_BOOKE_DE;
 			/* make sure there are no pending events */
-			_write_DBSR(-1);
-			_write_DBCR0(DBCR0_ICMP | DBCR0_IDM);
+			if ( PPC_BOOKE_405 == isBookE ) {
+				_write_PPC405_DBSR(-1);
+				_write_PPC405_DBCR0(DBCR0_ICMP | DBCR0_IDM);
+			} else {
+				_write_BOOKE_DBSR(-1);
+				_write_BOOKE_DBCR0(DBCR0_ICMP | DBCR0_IDM);
+			}
 		} else {
 			f->EXC_SRR1 |= MSR_SE;
 		}
@@ -446,6 +469,20 @@ uint32_t flags;
 #endif
 
 	isBookE = ppc_cpu_is_bookE();
+
+	if ( isBookE ) {
+		/* Clear all pending debug exceptions
+		 * and disable them for now; we'll enable
+		 * the ones we need later.
+		 */
+		if ( PPC_BOOKE_405 == isBookE ) {
+			_write_PPC405_DBSR(-1);
+			_write_PPC405_DBCR0(0);
+		} else {
+			_write_BOOKE_DBSR(-1);
+			_write_BOOKE_DBCR0(0);
+		}
+	}
 
 #ifndef HAVE_LIBBSPEXT
 
@@ -573,8 +610,13 @@ Thread_Control *tcb;
 		if ( isBookE ) {
 			tcb->Registers.msr |= MSR_BOOKE_DE;
 			/* make sure there are no pending events */
-			_write_DBSR(-1);
-			_write_DBCR0(DBCR0_ICMP | DBCR0_IDM);
+			if ( PPC_BOOKE_405 == isBookE ) {
+				_write_PPC405_DBSR(-1);
+				_write_PPC405_DBCR0(DBCR0_ICMP | DBCR0_IDM);
+			} else {
+				_write_BOOKE_DBSR(-1);
+				_write_BOOKE_DBCR0(DBCR0_ICMP | DBCR0_IDM);
+			}
 		} else {
 			/* just set SE in the TCB :-) */
 			tcb->Registers.msr |= MSR_SE;
