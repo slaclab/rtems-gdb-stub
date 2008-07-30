@@ -44,20 +44,9 @@
 
 /* Version/feature check :-( */
 
-#define ISMINVERSION(ma,mi,re) \
-	(    __RTEMS_MAJOR__  > (ma)	\
-	 || (__RTEMS_MAJOR__ == (ma) && __RTEMS_MINOR__  > (mi))	\
-	 || (__RTEMS_MAJOR__ == (ma) && __RTEMS_MINOR__ == (mi) && __RTEMS_REVISION__ >= (re)) \
-    )
-
 #if !defined PRIx32 /* pre 4.7.0 RTEMS */
 #define PRIx32 "x"
 #endif
-
-#if !ISMINVERSION(4,6,99)
-typedef uint32_t socklen_t;
-#endif
-
 
 #if defined(__PPC__)
 #include "rtems-gdb-stub-ppc-shared.h"
@@ -67,6 +56,10 @@ typedef uint32_t socklen_t;
 #include "rtems-gdb-stub-m68k.h"
 #else
 #error need target specific helper implementation
+#endif
+
+#if !ISMINVERSION(4,6,99)
+typedef uint32_t socklen_t;
 #endif
 
 #define TID_ANY ((rtems_id)0)
