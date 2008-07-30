@@ -19,10 +19,6 @@
 #include <signal.h>
 #include <assert.h>
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
-#endif
-
 #ifdef HAVE_LIBBSPEXT
 #include <bsp/bspExt.h>
 #endif
@@ -37,6 +33,29 @@
 #if !defined(ASM_60X_DSMISS_VECTOR) && defined(ASM_DSMISS_VECTOR)
 #define ASM_60X_DSMISS_VECTOR ASM_DSMISS_VECTOR
 #endif
+
+/* Pre 4.9 doesn't define this yet */
+#ifndef PPC_BOOKE_405
+#define PPC_BOOKE_405 1
+#endif
+
+#if ISMINVERSION(4,8,99)
+/* OK, we have ppc_interrupt_get_disable_mask() */
+#elif ISMINVERSION(4,7,99)
+/* Could be a 405 */
+static inline unsigned
+ppc_interrupt_get_disable_mask()
+{
+	return ( PPC_405 == current_ppc_cpu ) ?  0x20000 | MSR_EE : MSR_EE;
+}
+#else
+static inline unsigned
+ppc_interrupt_get_disable_mask()
+{
+	return MSR_EE;
+}
+#endif
+
 
 #define get_tcb(tid) rtems_gdb_get_tcb_dispatch_off(tid)
 
@@ -278,6 +297,20 @@ PPC_Frame p;
 	}
 }
 
+/* Provide dummy version in case BSP doesn't implement this */
+unsigned long
+_BSP_gdb_dummy_clear_hostbridge_errors(int enableMCP, int quiet)
+{
+	if ( enableMCP )
+		return (unsigned long)-1;
+	return 0;
+}
+
+unsigned long
+_BSP_clear_hostbridge_errors(int enableMCP, int quiet)
+__attribute__((weak,alias("_BSP_gdb_dummy_clear_hostbridge_errors")));
+
+
 static inline int
 exception_handler(BSP_Exception_frame *f, void *unused)
 {
@@ -314,11 +347,7 @@ RtemsDebugMsgRec msg;
 
 	switch ( f->_EXC_number ) {
 		case ASM_MACH_VECTOR     :
-#if 0
 			_BSP_clear_hostbridge_errors(1,0);
-#else
-#warning TSILLXXXXXXXXXXXXXXX
-#endif
 			msg.sig = SIGBUS;
 		break;
 
@@ -468,7 +497,16 @@ int rval = 0;
 uint32_t flags;
 #endif
 
+#if ISMINVERSION(4,8,99)
+	/* older versions have no feature check but do not support bookE anyways */
 	isBookE = ppc_cpu_is_bookE();
+#elif ISMINVERSION(4,7,99)
+	/* 4.8 supports the ppc405 */
+	if ( PPC_405 == current_ppc_cpu )
+		isBookE = PPC_BOOKE_405;
+#else
+	/* No support for bookE or 405 anyways in older versions */
+#endif
 
 	if ( isBookE ) {
 		/* Clear all pending debug exceptions
