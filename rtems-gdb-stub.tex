@@ -26,7 +26,7 @@
 \title{GDB Agent for RTEMS}
 
 \author{Till Straumann $<$strauman$|$at$|$slac.stanford.edu$>$}
-\date{3/14/2005; last modified 7/26/2007\\
+\date{3/14/2005; last modified 7/29/2008\\
 \nix
 }
 
@@ -35,6 +35,8 @@
 \tableofcontents
 
 \section{Introduction and Features}
+
+This document covers version 1.5 of the target agent.
 
 \subsection{Architecture}
 
@@ -66,11 +68,12 @@ Tasks are interrupted only as a result of hitting a breakpoint,
 incurring an exception or an explicit request by the debugger.
 Interrupted tasks can be inspected as usual (stack frame,
 register contents etc.) and can be `continued/resumed'.
-Only `interrupted' tasks can be inspected - the others continue
+Only `stopped' tasks can be inspected - the others continue
 executing normally.
 
 The stub also creates a special helper task context which is
-always interrupted, hence it is possible to do non-task related
+always interrupted when the target is stopped, hence it is
+possible to do non-task related
 work (inspect/change memory, disassemble, ...) without having
 to stop an application task.
 
@@ -90,8 +93,9 @@ powerpc/shared (and derived - should probably work on any
 
 Adding support for a new target should not be extremely
 hard. It mainly consists of writing two routines for
-packing/unpacking register values into a gdb-formatted
-array. Also, a low-level exception handler needs to be
+packing/unpacking register values into an array formatted
+as expected by gdb.
+Also, a low-level exception handler needs to be
 written (mostly for mapping exception codes to signal numbers).
 E.g., the i386/pc386 specific file consists of ~400 lines
 of quite straightforward code.
@@ -100,8 +104,9 @@ of quite straightforward code.
 One of the strengths of the gdb remote protocol is its simplicity
 which makes it possible to use many character-stream based
 I/O methods for exchanging messages.
-Currently, the stub supports TCP/IP and serial port communication
-via RTEMS' termios driver.
+Currently, the stub supports TCP/IP, serial port communication
+via RTEMS' termios driver and plain ``dumb'' character devices
+as long as they can be accessed via the file-system ({\tt /dev/xzy}).
 
 \subsection{GDB Patches}
 One important design goal was not having to patch gdb itself.
@@ -122,11 +127,16 @@ as small and as modular as possible.
  (which would result in violating design goal \#1: only
  interrupt tasks on request [explicit or breakpoint]).
 \item
- Additional patch adds a new gdb target (``\cmd{rtems-remote}'')
+ An additional patch adds a new gdb target (``\cmd{rtems-remote}'')
  with protocol
  extentions to support loadable modules (CEXP). Note that
  the stub works fine without CEXP, however.
 \end{itemize}
+
+\noindent
+All of these patches are usually available with the source-code
+of the stub as a ``{\tt .diff}''-file of the format
+{\tt gdb-<version>-<date>.diff}.
 
 \section{Building}
 For the prerequisites consult table~\ref{tbl:prereq}
@@ -144,7 +154,7 @@ For the prerequisites consult table~\ref{tbl:prereq}
 %\end{tabular}
 \begin{tabbing}
 target:\hspace{4em}\=\bul\= \kill
-host:  \> \bul \> download and unpack gdb-6.6 (or any later version \\
+host:  \> \bul \> download and unpack gdb-6.8 (or any later version \\
        \>      \> for which a patch has been developed -- check the \\
 	   \>      \> \protect{\verb4gdb-<version>-<date>.diff4} patches distributed \\
 	   \>      \> with rtems-gdb-stub \\
@@ -162,11 +172,13 @@ target:\> \bul \> (optional) libbspExt $>=$ version 1.3  \\
   Change directory to the gdb source topdir, create a build
   subdirectory (name of your choice), chdir there and configure
   (besides `powerpc', the `i386' and 'm68k' CPUs are supported and the
-  cross-debugger may be configured accordingly):
+  cross-debugger may be configured accordingly)%
+\footnote{Older versions of the gdb patch (pre 6.8) required the target
+to be {\tt <cpu>-ssrl-rtems}}:
 \begin{verbatim}
 >  mkdir build
 >  cd build
->  ../configure --target=powerpc-ssrl-rtems  
+>  ../configure --target=powerpc-rtems  
 \end{verbatim}
 
   Compile by typing {\tt make} (gnumake) and install manually:
@@ -223,7 +235,7 @@ don't know if this is the recommended way, though. YMMV.
 
 	Optimization Caveat: It is possible to use GDB with optimized
 	code (I do it all the time) but this may change the flow
-	of execution, subroutine calls (inlining) and may cause
+	of execution, inline subroutine calls and may cause
 	variables to `disappear' etc.
 
 \subsubsection*{Front-End}
@@ -274,7 +286,7 @@ don't know if this is the recommended way, though. YMMV.
 	It needs to be linked into the system and is started
 	by calling
 \begin{verbatim}
-		rtems_gdb_start(int agent_priority, char *serial_name)
+		int rtems_gdb_start(int agent_priority, char *device_name);
 \end{verbatim}
 
 	Passing a priority of 0 lets the daemon pick its default
@@ -282,7 +294,7 @@ don't know if this is the recommended way, though. YMMV.
 	connection method to be used. A NULL pointer lets the
 	daemon listen on TCP port 2159 (registered port number for the
 	gdb remote protocol) for an incoming connection,
-	if a string is passed, it must be the path to a serial
+	if a string is passed, it must be the path to a character
 	device, e.g., {\tt /dev/ttyS1}.
 
 	The agent can be stopped (\verb|rtems_gdb_stop()|) and restarted
@@ -304,12 +316,12 @@ don't know if this is the recommended way, though. YMMV.
 \begin{verbatim}
 		(gdb) target rtems-remote <target>:2159
 \end{verbatim}
-	or
+	or (serial)
+	 -- note that the agent's serial port runs at
+	115200 8N1 -- use GDB's \cmd{remote baud} command:
 \begin{verbatim}
 		(gdb) target rtems-remote <com_port_on_host>
 \end{verbatim}
-	(serial) -- note that the agent's serial port runs at
-	115200 8N1 -- use GDB's \cmd{remote baud} command.
 
 	UDP connections can also be used but gdb warns against
 	them being less reliable. There is usually no point
@@ -467,6 +479,12 @@ a list of loaded objects and their section addresses.
 	  of thread IDs/names is retrieved but not their stack frame
 	  or IP address (impossible without stopping all threads).
 \end{itemize}
+
+{\em Note that even if you do not use Cexp or the {\tt rtems-remote}
+target you still must use a patched {\tt gdb} in combination with this
+stub. One (small but important) change the patch achieves is avoiding
+to attach to all of the tasks running on the target  (and thus stop them) 
+which would bring the session to a grinding halt.}
 
 \verb|<<TODO>>|
 
