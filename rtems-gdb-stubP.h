@@ -6,6 +6,22 @@
 
 #include "cdll.h"
 
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
+
+#include <rtems.h>
+
+#ifdef RTEMS_VERSION_ATLEAST
+#define ISMINVERSION(ma,mi,re) RTEMS_VERSION_ATLEAST(ma,mi,re)
+#else
+#define ISMINVERSION(ma,mi,re) \
+	(    __RTEMS_MAJOR__  > (ma)	\
+	 || (__RTEMS_MAJOR__ == (ma) && __RTEMS_MINOR__  > (mi))	\
+	 || (__RTEMS_MAJOR__ == (ma) && __RTEMS_MINOR__ == (mi) && __RTEMS_REVISION__ >= (re)) \
+    )
+#endif
+
 #include "rtems-gdb-stub.h"
 #include <signal.h>
 
