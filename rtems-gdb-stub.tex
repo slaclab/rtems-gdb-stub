@@ -286,7 +286,7 @@ don't know if this is the recommended way, though. YMMV.
 	It needs to be linked into the system and is started
 	by calling
 \begin{verbatim}
-		int rtems_gdb_start(int agent_priority, char *device_name);
+  int rtems_gdb_start(int agent_prio, char *dev_name);
 \end{verbatim}
 
 	Passing a priority of 0 lets the daemon pick its default
