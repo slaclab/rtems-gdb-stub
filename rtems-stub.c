@@ -69,6 +69,12 @@ typedef uint32_t socklen_t;
 #define BLOCK_NON_INTERRUPTIBLE	1
 #define BLOCK_INTERRUPTIBLE		2
 
+/* Helper type to avoid type-punned pointer/alias warnings */
+typedef union {
+   	struct sockaddr_in sin; 
+	struct sockaddr    sa;
+} addr_u;
+
 int rtems_gdb_nounload = 0;
 
 STATIC	FILE * volatile rtems_gdb_strm = 0;
@@ -132,7 +138,11 @@ volatile int rtems_remote_debug = MSG_INFO | MSG_ERROR /* | DEBUG_SCHED | DEBUG_
 #endif
 
 static volatile signed char foreground  = 0;
-static volatile signed char	initialized = 0;
+
+#define GDB_CONN_TCP	1
+#define GDB_CONN_UDP	2
+#define GDB_CONN_DEV    3
+volatile signed char  rtems_gdb_running = 0;
 
 /* Include GPL code */
 
@@ -797,15 +807,20 @@ static void dolj(int signo)
 
 /* create and bind a socket to the GDB port */
 
-static int
-mksock(int type, char **perrmsg)
+static void
+filladdr(addr_u *s, unsigned port)
 {
-union {
-   	struct sockaddr_in sin; 
-	struct sockaddr    sa;
-} srv;
-socklen_t sl;
-int       sd;
+    memset(s, 0, sizeof(*s));
+    s->sin.sin_family = AF_INET;
+    s->sin.sin_port   = htons(((unsigned short)port));
+}
+
+static int
+mksock(int type, unsigned port, char **perrmsg)
+{
+addr_u       srv;
+socklen_t    sl;
+int          sd;
 
 	/* create socket */
 	sd = socket(PF_INET, type, 0);
@@ -815,9 +830,8 @@ int       sd;
 	}
 
     memset(&srv, 0, sizeof(srv));
-    srv.sin.sin_family = AF_INET;
-    srv.sin.sin_port   = htons(RTEMS_GDB_PORT);
-    sl                 = sizeof(srv.sin);
+	filladdr(&srv, port);
+    sl = sizeof(srv);
 	if ( bind(sd,&srv.sa,sl)<0 ) {
 		*perrmsg="bind";
 		close(sd);
@@ -880,7 +894,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	if ( !ttyName && !udp ) {
 
       /* create socket */
-	  rtems_gdb_sd = mksock(SOCK_STREAM, &msg);	
+	  rtems_gdb_sd = mksock(SOCK_STREAM, RTEMS_GDB_PORT, &msg);	
 	  if ( rtems_gdb_sd < 0 ) {
 		goto cleanup;
 	  }
@@ -890,7 +904,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
       setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_KEEPALIVE, &sarg, sizeof(sarg));
       setsockopt(rtems_gdb_sd, SOL_SOCKET, SO_REUSEADDR, &sarg, sizeof(sarg));
 
-	  if ( listen(rtems_gdb_sd, 1) ) {
+	  if ( listen(rtems_gdb_sd, 0) ) {
 		msg = "listen";
 		goto cleanup;
 	  }
@@ -899,14 +913,15 @@ rtems_gdb_daemon (rtems_task_argument arg)
 	if (rtems_gdb_tgt_install_ehandler(1))
 		goto cleanup;
 	ehandler_installed=1;
-	initialized = 1;
+
+	rtems_gdb_running = ttyName ? GDB_CONN_DEV : ( udp ? GDB_CONN_UDP : GDB_CONN_TCP );
 	if ( !(helper_tid = rtems_gdb_thread_helper("GDBh", 200, 20000+RTEMS_MINIMUM_STACK_SIZE, helper_thread, 0)) )
 		goto cleanup;
   }
 
   INFMSG("GDB daemon (Release $Name$): starting up\n\n");
 
-  for ( initialized = 1; initialized; foreground ? initialized = 0 : 0) {
+  for ( ; rtems_gdb_running; foreground ? rtems_gdb_running = 0 : 0) {
 
 	/* synchronize with helper task */
 	if ( !theHelperMsg ) {
@@ -924,11 +939,8 @@ rtems_gdb_daemon (rtems_task_argument arg)
 
 	/* startup / initialization */
 	if ( !ttyName ) {
-		union {
-			struct sockaddr_in sin;
-			struct sockaddr    sa;
-		} a;
-		/* FIXME: should use socklen_t but older (4.6.2) RTEMS doesn't have it */
+		addr_u a;
+
 		socklen_t a_s = sizeof(a.sin);
 
 		if ( !udp ) {
@@ -943,7 +955,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 			}
 		} else {
 			char b;
-			if ( (rtems_gdb_sd = mksock(SOCK_DGRAM, &msg)) < 0 ) {
+			if ( (rtems_gdb_sd = mksock(SOCK_DGRAM, RTEMS_GDB_PORT, &msg)) < 0 ) {
 				goto cleanup;
 			}
 			/* wait for something to arrive */
@@ -970,7 +982,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 				goto cleanup;
 			}
 			/* only do a single session */
-			initialized = 0;
+			rtems_gdb_running = 0;
 		} else
 #endif
 		{
@@ -1509,7 +1521,7 @@ cleanup:
 void
 rtems_gdb_breakpoint ()
 {
-  if (initialized)
+  if (rtems_gdb_running)
     BREAKPOINT ();
 }
 
@@ -1656,8 +1668,10 @@ rtems_status_code sc;
 int
 rtems_gdb_stop(int silence)
 {
-int  sd;
-FILE *f;
+int       sd;
+FILE      *f;
+unsigned  connType;
+int       rval = 0;
 
 	if ( !rtems_gdb_tid ) {
 		fprintf(stderr,"Currently no gdb daemon is running\n");
@@ -1677,28 +1691,121 @@ FILE *f;
 	if ( blah_tid )
 		rtems_task_delete(blah_tid);
 #endif
-	
-	/* enqueue a special message */
-	initialized = 0;
+
+	switch ( (connType = rtems_gdb_running) ) {
+		default:
+			fprintf(stderr,"Unknown connection method (internal error); cannot shut down\n");
+		return -1;
+
+		case GDB_CONN_DEV:
+		case GDB_CONN_UDP:
+		case GDB_CONN_TCP:
+		break;
+
+		case 0:
+			fprintf(stderr,"Daemon running but not initialized? Try later\n");
+		return -1;
+	}
+
+	rtems_gdb_running = 0;
+
+	/* Enqueue a special message in case daemon is waits for
+	 * pending messages. This should never happen if the host
+	 * gdb is detached.
+	 */
 	rtems_semaphore_flush( gdb_pending_id );
 
-	/* close the stream -- this causes a blocking getDebugChar()
-	 * to abort but it is not really thread safe.
-	 * We don't want to add the overhead of properly mutexing
-	 * the stream - the stop/start feature is not meant for
-	 * regular, frequent use but mostly for debugging.
-	 * Should be safe to use while the daemon is blocking for
-	 * events or I/O on the stream.
-	 */
-	f = rtems_gdb_strm;
-	rtems_gdb_strm = 0;
-	fclose(f);
+#if 0 /* 'connect' used by this method only works if a loopback IF is configured
+       * so we are back to square one and can as well use the simpler algorithm.
+       * Applications w/o loopback IF are in the rain...
+       */
+	if (  GDB_CONN_TCP == connType ) {
+		char      *msg;
+		addr_u    srv;
+		socklen_t sl;
 
-	sd = rtems_gdb_sd;
-	rtems_gdb_sd = -1;
-	if ( sd >= 0 )
+		/* If the agent is blocking in 'accept' we should
+		 * be able to just close the socket, BUT for unknown reasons
+		 * the RTEMS implementation does not unblock a task sleeping
+		 * in 'accept(rtems_gdb_sd)' if the socket descriptor is closed. Probably
+		 * because sockets must not really be shared among threads...
+		 */
+		if ( (sd = mksock(SOCK_STREAM, 0, &msg)) < 0 ) {
+			fprintf(stderr,"Unable to create dummy socket (%s): %s\n", msg, strerror(errno));
+			return -1;
+		}
+
+		sl = sizeof(srv);
+
+		if ( getsockname(sd, &srv.sa, &sl) ) {
+			fprintf(stderr,"Unable to retrieve name of dummy socket: %s\n", strerror(errno));
+			close(sd);
+			return -1;
+		}
+
+		srv.sin.sin_port = htons(RTEMS_GDB_PORT);
+
+		if ( connect(sd, &srv.sa, sl) ) {
+			fprintf(stderr,"Unable to connect dummy socket: %s\n", strerror(errno));
+			rval = -1;
+		}
+
+		/* This should wake up the daemon and cause it to shut down */
 		close(sd);
-	return 0;
+
+	} else if ( GDB_CONN_UDP == connType ) {
+		/* wakes up daemon blocking in 'recvfrom' (UDP).
+		 */
+		sd = rtems_gdb_sd;
+		rtems_gdb_sd = -1;
+		close(sd);
+	} else /* GDB_CONN_DEV == connType */ {
+		/* close the stream -- this causes a blocking getDebugChar()
+		 * to abort but it is not really thread safe.
+		 * We don't want to add the overhead of properly mutexing
+		 * the stream - the stop/start feature is not meant for
+		 * regular, frequent use but mostly for debugging.
+		 * Should be safe to use while the daemon is blocking for
+		 * events or I/O on the stream.
+		 */
+		f = rtems_gdb_strm;
+		rtems_gdb_strm = 0;
+		fclose(f);
+	}
+#else
+	if (  GDB_CONN_DEV == connType ) {
+		/* close the stream -- this causes a blocking getDebugChar()
+		 * to abort but it is not really thread safe.
+		 * We don't want to add the overhead of properly mutexing
+		 * the stream - the stop/start feature is not meant for
+		 * regular, frequent use but mostly for debugging.
+		 * Should be safe to use while the daemon is blocking for
+		 * events or I/O on the stream.
+		 */
+		f = rtems_gdb_strm;
+		rtems_gdb_strm = 0;
+		fclose(f);
+	} else {
+		/* wakes up daemon blocking in 'accept' (TCP) or 'recvfrom' (UDP).
+		 *
+		 * NOTE: waking up a task sleeping in 'accept' seems to work only
+		 *       if a loopback interface has been configured! This is weird...
+		 *
+		 *       As a work-around, you can set rtems_gdb_running to zero
+		 *       from the console and then make and close a TCP connection
+		 *       from remotely (e.g., 'telnet rtems-box 2159' <Ctrl>-<Alt>-] ).
+		 *       This causes the daemon to leave 'accept' and shut down.
+		 *       BUT you must not use rtems_gdb_stop() in this case because
+		 *       the socket must only be shut down by the daemon when
+		 *       exiting.
+		 */
+		sd = rtems_gdb_sd;
+		rtems_gdb_sd = -1;
+		close(sd);
+	}
+#endif
+
+	return rval;
 }
 
 /* Restart the thread provided that it exists and
@@ -1916,7 +2023,7 @@ static void post_and_suspend(RtemsDebugMsg msg)
 
 int rtems_gdb_notify_and_suspend(RtemsDebugMsg msg)
 {
-	if ( !initialized ) 
+	if ( !rtems_gdb_running ) 
 		return -1;
 
 	if ( msg->tid == rtems_gdb_tid ) {
@@ -2104,7 +2211,7 @@ RtemsDebugMsg msg;
 
 	msg = getFirstMsg( 0 == *pcurrent ? BLOCK_INTERRUPTIBLE : DONT_BLOCK );
 
-	if ( !initialized ) {
+	if ( !rtems_gdb_running ) {
 		INFMSG("Daemon killed;\n");
 		return -1;
 	}
