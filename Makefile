@@ -168,6 +168,7 @@ docinst: $(RTEMS_SITE_DOCDIR)/gdb/rtems-gdb-stub.pdf $(RTEMS_SITE_DOCDIR)/html/r
 %.pdf: %.tex
 	pdflatex $^	
 	pdflatex $^	
+	pdflatex $^	
 
 $(RTEMS_SITE_DOCDIR)/gdb/rtems-gdb-stub.pdf: rtems-gdb-stub.pdf
 	@mkdir -p $(RTEMS_SITE_DOCDIR)/gdb
