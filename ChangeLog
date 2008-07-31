@@ -1,4 +1,6 @@
 Changes since release 1.4:
+  T.S: 2008-07-30
+  - added patch for gdb 6.8
   T.S: 2008-07-26
   - PPC405 Support. Almost like BookE but the SPRs are different :-(.
   - clear DBCR0 in init (JTAG debugger might have enabled external mode).
