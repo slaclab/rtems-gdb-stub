@@ -1,3 +1,4 @@
+Changes since release 1.5:
 Changes since release 1.4:
   T.S: 2008-07-30
   - removed patches for older gdbs (6.5, 6.4, 6.3, 6.2.1). Users should
