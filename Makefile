@@ -7,15 +7,16 @@
 
 #point to cexp source directory (only needed if USE_CEXP=yes)
 #i.e., where the cexpmodP.h header can be found
-CEXP_SOURCE_PATH=../cexp
+CEXP_SOURCE_PATH=../../cexp
 
 #must be lower-case 'yes' (no quotes) to enable
 USE_CEXP=yes
 #must be lower-case 'yes' (no quotes) to enable
-USE_LIBBSPEXT=yes
+USE_LIBBSPEXT=no
 
 # C source names, if any, go here -- minus the .c
-C_PIECES=rtems-stub $(STUB_$(RTEMS_CPU)) rtems-stub.modini
+C_PIECES_CEXP_yes = rtems-stub.modini
+C_PIECES=rtems-stub $(STUB_$(RTEMS_CPU)) $(C_PIECES_CEXP_$(USE_CEXP))
 C_FILES=$(C_PIECES:%=%.c)
 C_O_FILES=$(C_PIECES:%=${ARCH}/%.o)
 
@@ -44,7 +45,9 @@ OBJS=$(C_O_FILES) $(CC_O_FILES) $(S_O_FILES)
 # linked application is generated.
 # If it has a '.obj' extension, a loadable module is built.
 
+ifeq ($(USE_CEXP),yes)
 PGMS=${ARCH}/rtems-gdb-stub.obj
+endif
 LIBNAME=librtems-gdb-stub.a
 LIB=$(ARCH)/$(LIBNAME)
 
