@@ -416,7 +416,7 @@ diff -cN -r gdb-6.6.orig/gdb/remote-rtems.c gdb-6.6/gdb/remote-rtems.c
 --- gdb-6.6/gdb/remote-rtems.c	2007-01-31 21:40:01.000000000 -0800
 ***************
 *** 0 ****
---- 1,618 ----
+--- 1,626 ----
 + 
 + #include <unistd.h>
 + 
@@ -811,6 +811,14 @@ diff -cN -r gdb-6.6.orig/gdb/remote-rtems.c gdb-6.6/gdb/remote-rtems.c
 + 						}
 + 					}
 + 				}
++ 				/* Reload main symbol table AFTER individual modules.
++ 				 * The reason is that the main executable may contain
++ 				 * memory regions where sections of modules are loaded.
++ 				 * If we look for symbols we want to use the module's
++ 				 * symbol and not one from the main executable.
++ 				 */
++ 				if ( symfile_objfile )
++ 					put_objfile_before(of, symfile_objfile);
 + 			}
 + 		  do_cleanups(cln1);
 + 		}

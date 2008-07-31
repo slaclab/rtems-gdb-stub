@@ -1,6 +1,11 @@
 Changes since release 1.4:
   T.S: 2008-07-30
-  - added patch for gdb 6.8
+  - updated patch for gdb-6.6 (make sure module symfiles appear before
+    main symfile so that symbols from modules loaded into a memory
+	region covered by the main executable are searched for in the module
+	symfiles first).
+  - added patch for gdb-6.8. This patch deprecates the NBSD core file support,
+    sorry.
   T.S: 2008-07-26
   - PPC405 Support. Almost like BookE but the SPRs are different :-(.
   - clear DBCR0 in init (JTAG debugger might have enabled external mode).
