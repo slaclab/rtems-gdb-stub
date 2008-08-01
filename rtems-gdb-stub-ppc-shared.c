@@ -11,6 +11,7 @@
 #include <libcpu/raw_exception.h> 
 #include <libcpu/spr.h> 
 #include <libcpu/stackTrace.h>
+#include <libcpu/cpuIdent.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +53,37 @@ typedef struct BpntRec_ {
 	volatile unsigned long *addr;
 	unsigned long opcode;
 } BpntRec;
+
+#ifndef MSR_BOOKE_DE
+#define MSR_BOOKE_DE	(1<<(63-54))
+#endif
+
+#define DBSR	304
+#define DBCR0	308
+
+/* instruction complete */
+#define DBCR0_ICMP (1<<(63-36))
+#define DBCR0_IDM  (1<<(63-33))
+
+SPR_RW(DBSR)
+SPR_RW(DBCR0)
+
+static int isBookE = 0;
+
+uint32_t mfmsr()
+{
+	return _read_MSR();
+}
+
+uint32_t mfdbsr()
+{
+	return _read_DBSR();
+}
+
+uint32_t mfdbcr0()
+{
+	return _read_DBCR0();
+}
 
 #define NUM_BPNTS 32
 
@@ -321,12 +353,16 @@ RtemsDebugMsgRec msg;
 					return 0;
 				}
 			}
-			/* in any case, we should switch SE off now.
+			/* in any case, we should switch SE/DE off now.
 			 * It is possible to end up here if they attach
 			 * to a thread without breakpoint (step after
 			 * task_switch_to())
 			 */
-			f->EXC_SRR1 &= ~MSR_SE;
+			if ( isBookE ) {
+				f->EXC_SRR1 &= ~MSR_BOOKE_DE;
+			} else {
+				f->EXC_SRR1 &= ~MSR_SE;
+			}
 			msg.sig = SIGTRAP;
 		break;
 
@@ -372,7 +408,14 @@ RtemsDebugMsgRec msg;
 		 * ASM_TRACE_VECTOR branch above
 		 */
 		f->EXC_SRR1 &= ~MSR_EE;
-		f->EXC_SRR1 |= MSR_SE;
+		if ( isBookE ) {
+			f->EXC_SRR1 |= MSR_BOOKE_DE;
+			/* make sure there are no pending events */
+			_write_DBSR(-1);
+			_write_DBCR0(DBCR0_ICMP | DBCR0_IDM);
+		} else {
+			f->EXC_SRR1 |= MSR_SE;
+		}
 	} else {
 		stepOverState.sig = 0;
 	}
@@ -396,6 +439,11 @@ rtems_gdb_tgt_install_ehandler(int action)
 int rval = 0;
 #ifndef HAVE_LIBBSPEXT
 uint32_t flags;
+#endif
+
+	isBookE = ppc_cpu_is_bookE();
+
+#ifndef HAVE_LIBBSPEXT
 
 	rtems_interrupt_disable(flags);
 	if ( action ) {
@@ -518,8 +566,15 @@ Thread_Control *tcb;
 	if (msg->frm) return 0;
 
 	if ( (tcb = get_tcb(msg->tid)) ) {
-		/* just set SE in the TCB :-) */
-		tcb->Registers.msr |= MSR_SE;
+		if ( isBookE ) {
+			tcb->Registers.msr |= MSR_BOOKE_DE;
+			/* make sure there are no pending events */
+			_write_DBSR(-1);
+			_write_DBCR0(DBCR0_ICMP | DBCR0_IDM);
+		} else {
+			/* just set SE in the TCB :-) */
+			tcb->Registers.msr |= MSR_SE;
+		}
 		_Thread_Enable_dispatch();
 		return 0;
 	}
