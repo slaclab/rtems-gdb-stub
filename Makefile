@@ -7,7 +7,7 @@
 
 #point to cexp source directory (only needed if USE_CEXP=yes)
 #i.e., where the cexpmodP.h header can be found
-CEXP_SOURCE_PATH=../../cexp
+CEXP_SOURCE_PATH=../cexp
 
 #must be lower-case 'yes' (no quotes) to enable
 USE_CEXP=yes
