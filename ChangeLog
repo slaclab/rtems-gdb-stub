@@ -5,8 +5,8 @@ Changes since release 1.4:
     use a recent one.
   - updated patch for gdb-6.6 (make sure module symfiles appear before
     main symfile so that symbols from modules loaded into a memory
-	region covered by the main executable are searched for in the module
-	symfiles first).
+    region covered by the main executable are searched for in the module
+    symfiles first).
   - added patch for gdb-6.8. This patch deprecates the NBSD core file support,
     sorry.
   T.S: 2008-07-26
@@ -15,7 +15,7 @@ Changes since release 1.4:
   T.S: 2008-04-30
   - rtems-gdb-stub-m68k.c: fixed some compiler warnings (printf format
     types using inttypes.h. Unfortunately, rtems-4.7 uses 64-bit types
-	for intptr_t so there remain ugly casts of void*->uint32_t.
+    for intptr_t so there remain ugly casts of void*->uint32_t.
   T.S: 2008-04-10
   - BookE single-stepping mode is different from classic PPC. Implemented
     (quick+dirty for now).
