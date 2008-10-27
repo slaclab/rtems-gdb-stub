@@ -988,6 +988,8 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		{
 			/* workaround; a deadlock seems to occur if we reopen the console device
 			 * while printing is still in progress :-(
+			 *
+			 * This should be addressed by rtems PR#1332.
 			 */
 			fflush(stderr); tcdrain(fileno(stderr));
 			fflush(stdout);	tcdrain(fileno(stdout));
