@@ -5,11 +5,11 @@ include $(top_srcdir)/rtems-pre.am
 
 EXEEXT=$(OBJEXEEXT)
 
-STUB_powerpc                      = rtems-gdb-stub-ppc-shared.c
-STUB_i386                         = rtems-gdb-stub-i386.c
-STUB_m68k                         = rtems-gdb-stub-m68k.c m68k-stackops.S
+STUB_powerpc                      = rtems-gdb-stub-ppc-shared.c rtems-gdb-stub-ppc-shared.h
+STUB_i386                         = rtems-gdb-stub-i386.c rtems-gdb-stub-i386.h
+STUB_m68k                         = rtems-gdb-stub-m68k.c m68k-stackops.S rtems-gdb-stub-m68k.h
 
-librtems_gdb_stub_a_SOURCES       = rtems-stub.c
+librtems_gdb_stub_a_SOURCES       = rtems-stub.c rtems-gdb-stubP.h cdll.h
 EXTRA_librtems_gdb_stub_a_SOURCES = $(STUB_powerpc) $(STUB_i386) $(STUB_m68k)
 librtems_gdb_stub_a_LIBADD        = $(filter %.o,$(STUB_@rtems_cpu@:%.c=%.o) $(STUB_@rtems_cpu@:%.S=%.o))
 librtems_gdb_stub_a_DEPENDENCIES  = $(filter %.o,$(STUB_@rtems_cpu@:%.c=%.o) $(STUB_@rtems_cpu@:%.S=%.o))
@@ -26,7 +26,10 @@ bin_PROGRAMS                      = rtems-gdb-stub
 rtems_gdb_stub_SOURCES            = rtems-stub.modini.c
 rtems_gdb_stub_LDADD              = $(librtems_gdb_stub_a_OBJECTS)
 rtems_gdb_stub_DEPENDENCIES       = $(librtems_gdb_stub_a_OBJECTS)
-EXTRA_rtems_gdb_stub_SOURCES      = $(EXTRA_librtems_gdb_stub_a_SOURCES)
+
+EXTRA_rtems_gdb_stub_SOURCES      = crc32.c switch_stack.c cdll-tst.c
+EXTRA_rtems_gdb_stub_SOURCES     += $(EXTRA_librtems_gdb_stub_a_SOURCES)
+
 rtems_gdb_stub_LDADD             += $(librtems_gdb_stub_a_LIBADD)
 rtems_gdb_stub_DEPENDENCIES      += $(librtems_gdb_stub_a_DEPENDENCIES)
 
