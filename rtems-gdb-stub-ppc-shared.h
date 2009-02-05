@@ -16,7 +16,12 @@ typedef BSP_Exception_frame *RtemsDebugFrame;
 
 static inline void BREAKPOINT()
 {
+/* PSIM (and maybe other targets) leave the system exception
+ * to the firmware.
+ * We now use TRAP(0)
 	asm volatile("sc");
+ */
+	asm volatile("twi 7,0,0");
 }
 
 #include "rtems-gdb-stubP.h"

@@ -320,6 +320,7 @@ static struct {
 	int				sig;
 } stepOverState = { -1,0,0 };
 RtemsDebugMsgRec msg;
+unsigned            n;
 
 	if (   !_Thread_Executing 
 		|| (RTEMS_SUCCESSFUL!=rtems_task_ident(RTEMS_SELF,RTEMS_LOCAL, &msg.tid)) ) {
@@ -362,7 +363,31 @@ RtemsDebugMsgRec msg;
 
 		case ASM_PROG_VECTOR     :
 			/* did we run into a soft breakpoint ? */
-			msg.sig = TRAPNO(*(volatile unsigned long*)f->EXC_SRR0) < 0 ? SIGILL : SIGCHLD;
+
+			n = f->EXC_SRR0;
+			/* Trap # 0 is special -- it is a 'hard' breakpoint managed
+			 * by us or the application (not by gdb). It is never inserted/removed
+			 * but compiled in.
+			 * We lift the PC over the breakpoint and proceed...
+			 */
+			while ( 0 == TRAPNO(*(volatile unsigned long*)f->EXC_SRR0) ) {
+				f->EXC_SRR0 += 4;
+			}
+
+			/* Here we are at either a normal instruction or a 'normal' breakpoint */
+
+			if ( f->EXC_SRR0 != n ) {
+				/* If we hit one (or more) 'hard' breakpoints then we proceed
+				 * with SIGCHLD. 
+				 * If the next instruction is a gdb breakpoint then life
+				 * will go on as if the 'hard' BP didn't exist.
+				 */
+				msg.sig      = SIGCHLD;
+				f->EXC_SRR0 += n;
+			} else {
+				/* no hard BP; this must be a gdb BP or a real exception */
+				msg.sig = TRAPNO(*(volatile unsigned long*)f->EXC_SRR0) < 0 ? SIGILL : SIGCHLD;
+			}
 		break;
 
 		case ASM_FLOAT_VECTOR    :
@@ -386,6 +411,10 @@ RtemsDebugMsgRec msg;
 			 	 * a single static variable is OK to maintain our state
 			 	 */
 				if ( stepOverState.trapno >= 0 ) {
+					if ( 0 == stepOverState.trapno ) {
+						printk("FATAL INTERNAL ERROR; stepOverState.trapno should never be 0\n");
+						return -1;
+					}
 					/* restore soft bpnt */
 					do_patch(bpnts[stepOverState.trapno].addr, TRAP(stepOverState.trapno));
 				}
@@ -439,7 +468,11 @@ RtemsDebugMsgRec msg;
 
 		/* resuming; we might have to step over a breakpoint */
 	if ( (stepOverState.trapno = TRAPNO(*(volatile unsigned long *)f->EXC_SRR0)) >= 0 ) {
-			/* indeed; have to patch back and single step over it */
+		/* indeed; have to patch back and single step over it */
+		if ( 0 == stepOverState.trapno ) {
+			printk("FATAL INTERNAL ERROR; stepOverState.trapno should never be 0\n");
+			return -1;
+		}
 		do_patch(bpnts[stepOverState.trapno].addr, bpnts[stepOverState.trapno].opcode);
 	}
 
@@ -579,15 +612,18 @@ volatile unsigned long   opcode, subst;
 	if ( len > 4 )
 		return -1;
 
+	/* Reserve Trap #0 for breakpoints that we always
+	 * leave in place (as opposed to GDB managing them).
+	 */
 	for ( found = bpnts + (NUM_BPNTS - 1), slot = 0;
-		  found >= bpnts;
+		  found > bpnts;
 		  found-- ) {
 		if ( !found->opcode )
 			slot = found;
 		else if ( found->addr == (volatile unsigned long *)addr )
 			break;
 	}
-	if ( found < bpnts )
+	if ( found <= bpnts )
 		found = 0;
 
 	/* here we have
