@@ -4,6 +4,10 @@
 
 /* Public interface header */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* The daemon's TID */
 extern volatile rtems_id rtems_gdb_tid;
 
@@ -102,5 +106,9 @@ rtems_gdb_stop(int override);
 
 /* target dependent code may set this to block module unloading */
 extern int rtems_gdb_nounload;
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -1,4 +1,7 @@
 Changes since release 1.5:
+  T.S: 2009-08-06
+  - rtems-gdb-stub.h: Added extern "C" linkage for C++ inclusion (Thanks to
+      Daron Chabot).
   T.S: 2009-02-04
   - use TRAP 0 instead of SC for 'fixed', i.e., non-gdb managed breakpoints.
     Some firmware (e.g., psim) may already use SC.
