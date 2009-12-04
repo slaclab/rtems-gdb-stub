@@ -159,10 +159,12 @@ unsigned long	val;
 	GETSR(GS,buf);
 
 	if ( (tcb = get_tcb(msg->tid)) ) {
+#if CPU_HARDWARE_FP == TRUE || CPU_SOFTWARE_FP == TRUE
 		Context_Control_fp *fpc = tcb->fp_context;
 		if ( fpc ) {
 #warning TODO copy FP regs
 		}
+#endif
 		if (!f) {
 			memcpy(buf + EBX_OFF, &tcb->Registers.ebx, 4);
 			memcpy(buf + ESP_OFF, &tcb->Registers.esp, 4);
@@ -220,10 +222,12 @@ unsigned long	val;
 	PUTSR(GS,buf);
 
 	if ( (tcb = get_tcb(msg->tid)) ) {
+#if CPU_HARDWARE_FP == TRUE || CPU_SOFTWARE_FP == TRUE
 		Context_Control_fp *fpc = tcb->fp_context;
 		if ( fpc ) {
 #warning TODO copy FP regs
 		}
+#endif
 		if (!f) {
 			YPCMEM(buf + EBX_OFF, &tcb->Registers.ebx, 4);
 			YPCMEM(buf + ESP_OFF, &tcb->Registers.esp, 4);
