@@ -1,4 +1,13 @@
 Changes since release 1.5:
+  T.S: 2009-12-04
+  - BUGFIX: 
+	EXC_SRR0 _is_ already adjusted after hitting a hard breakpoint.
+		n = f->EXC_SRR0;
+		while ( hardbpt(f->EXC_SRR0) )
+			f->EXC_SRR0+=4;
+		if ( f->EXC_SRR0 != n )
+			f->EXC_SRR0 = n; /* <<< This was BAD */
+    
   T.S: 2009-08-06
   - rtems-gdb-stub.h: Added extern "C" linkage for C++ inclusion (Thanks to
       Daron Chabot).

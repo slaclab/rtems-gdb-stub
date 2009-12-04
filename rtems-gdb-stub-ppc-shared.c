@@ -383,7 +383,6 @@ unsigned            n;
 				 * will go on as if the 'hard' BP didn't exist.
 				 */
 				msg.sig      = SIGCHLD;
-				f->EXC_SRR0 += n;
 			} else {
 				/* no hard BP; this must be a gdb BP or a real exception */
 				msg.sig = TRAPNO(*(volatile unsigned long*)f->EXC_SRR0) < 0 ? SIGILL : SIGCHLD;
