@@ -1,4 +1,14 @@
 Changes since release 1.5:
+  T.S: 2010-01-12
+  - rtems-gdb-stub-m68k.c: FIXED: declaration of argument to
+    _m68k_gdb_exception_handler().
+  - rtems-gdb-stub-i386.h: WORKAROUND/HACK: stack-switcher doesn't
+    work for SSE yet. If compiled for __SSE__ then fall back to
+    disabling the stack-switcher. This let's the code at least work
+    most of the time (but it will crash horribly if the user tries
+    to execute code on the target)
+  - rtems-gdb-stub-ppc-shared.c: include <bsp/vectors.h> instead of
+    deprecated <libcpu/raw_exception.h>.
   T.S: 2009-12-04
   - BUGFIX: 
 	EXC_SRR0 _is_ already adjusted after hitting a hard breakpoint.

@@ -8,7 +8,7 @@
 
 #include "rtems-gdb-stub-ppc-shared.h"
 
-#include <libcpu/raw_exception.h> 
+#include <bsp/vectors.h> 
 #include <libcpu/spr.h> 
 #include <libcpu/stackTrace.h>
 #include <libcpu/cpuIdent.h>

@@ -26,7 +26,13 @@ static inline void BREAKPOINT()
  * Therefore, we must resort to a separate stack.
  * See 'switch_stack.c' for an explanation how it works...
  */
+#ifdef __SSE__
+#define USE_GDB_REDZONE
+#warning "Stack switching when __SSE__ is enabled not implemented yet; \
+  MUST NOT call functions via gdb"
+#else
 #undef USE_GDB_REDZONE
+#endif
 
 /* Define architecture specific stuff for i386 */
 

@@ -300,9 +300,8 @@ int i;
  * AKA 'top-half' routine.
  */
 void
-_m68k_gdb_exception_handler(int arg)
+_m68k_gdb_exception_handler(M68k_ExceptionFrame frame)
 {
-M68k_ExceptionFrame frame = (M68k_ExceptionFrame)&arg;
 uint32_t            *p = frame->usr_stack;
 M68k_GdbFrame       gf;
 M68k_RetInfo        ri;
