@@ -62,6 +62,15 @@
 typedef uint32_t socklen_t;
 #endif
 
+/* All the magic doesn't work on gdb-6.8. The current gdb patch
+ * disables executing calls on the target!
+ */
+#define INFCALL_BROKEN
+
+#if !defined(USE_GDB_REDZONE) && defined(INFCALL_BROKEN)
+#define USE_GDB_REDZONE
+#endif
+
 #define TID_ANY ((rtems_id)0)
 #define TID_ALL ((rtems_id)-1)
 
@@ -920,6 +929,9 @@ rtems_gdb_daemon (rtems_task_argument arg)
   }
 
   INFMSG("GDB daemon (Release $Name$): starting up\n\n");
+#ifndef USE_GDB_REDZONE
+  INFMSG("Using stack switcher; **must not use the stack checker**\n");
+#endif
 
   for ( ; rtems_gdb_running; foreground ? rtems_gdb_running = 0 : 0) {
 
