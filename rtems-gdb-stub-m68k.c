@@ -129,10 +129,12 @@ int             deadbeef = 0xdeadbeef;
 	}
 
 	if ( (tcb = get_tcb(msg->tid)) ) {
+#if CPU_HARDWARE_FP == TRUE
 		Context_Control_fp *fpc = tcb->fp_context;
 		if ( fpc ) {
 #warning TODO copy FP regs
 		}
+#endif
 		if (!f) {
 			memcpy(buf + M68K_D2_REGNUM*4, &tcb->Registers.d2, 4);
 			memcpy(buf + M68K_D3_REGNUM*4, &tcb->Registers.d3, 4);
@@ -175,10 +177,12 @@ int            deadbeef = 0xdeadbeef;
 	}
 
 	if ( (tcb = get_tcb(msg->tid)) ) {
+#if CPU_HARDWARE_FP == TRUE
 		Context_Control_fp *fpc = tcb->fp_context;
 		if ( fpc ) {
 #warning TODO copy FP regs
 		}
+#endif
 		if (!f) {
 			YPCMEM(buf + M68K_D2_REGNUM*4, &tcb->Registers.d2, 4);
 			YPCMEM(buf + M68K_D3_REGNUM*4, &tcb->Registers.d3, 4);
@@ -300,8 +304,9 @@ int i;
  * AKA 'top-half' routine.
  */
 void
-_m68k_gdb_exception_handler(M68k_ExceptionFrame frame)
+_m68k_gdb_exception_handler(int arg)
 {
+M68k_ExceptionFrame frame = (M68k_ExceptionFrame)&arg;
 uint32_t            *p = frame->usr_stack;
 M68k_GdbFrame       gf;
 M68k_RetInfo        ri;
@@ -311,7 +316,7 @@ M68k_RetInfo        ri;
 	/* see m68k cpu_asm.S for details -- this code DEPENDS on cpu_asm.S details */
 
 	/* it would probably be better to make changes there and provide a generic
-         * API for low-level exception handling...
+	 * API for low-level exception handling...
 	 */
 
 	frame->regs.d[0] = p[0];
@@ -449,21 +454,23 @@ int rtems_gdb_m68k_freeze_resume=0;
 
 /* top-half exception handler (itself wrapped by assembly code) */
 void
-_m68k_gdb_ret_to_thread(M68k_GdbFrameRec r)
+_m68k_gdb_ret_to_thread(int arg)
 {
+M68k_GdbFrame r = (M68k_GdbFrame)&arg;
+
 	/* branch to main exception handler */
-	exception_handler(&r);
+	exception_handler(r);
 
 	/* fixup registers */
 
 	/* adjust stack to store return info */
-	r.regs.a[7] -= sizeof(M68k_RetInfoRec);
+	r->regs.a[7] -= sizeof(M68k_RetInfoRec);
 	/* store return info */
-	*((M68k_RetInfo)(r.regs.a[7])) = r.ret_info;
+	*((M68k_RetInfo)(r->regs.a[7])) = r->ret_info;
 
 #ifdef DEBUGGING_ENABLED
 	if ( rtems_gdb_m68k_freeze_resume ) {
-		rtems_gdb_tgt_dump_frame(&r);
+		rtems_gdb_tgt_dump_frame(r);
 		rtems_task_suspend(RTEMS_SELF);
 	}
 #endif
