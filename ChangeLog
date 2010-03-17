@@ -1,4 +1,43 @@
 Changes since release 1.5:
+  T.S: 2010-03-17
+  - rtems-gdb-stub-m68k.c: REVERTED: declaration of argument
+    to _m68k_gdb_exception_handler() and used the same way
+    for _m68k_gdb_ret_to_thread(). I could not find any
+    documentation describing the m68k ABI. Somehow calling
+    C from assembly crashes unless we pass an 'int' take
+    the address and cast to a struct pointer. This is most
+    likely gcc dependent.
+    Issue #warning about missing FP copy implementation only
+	if compiling for a hard-float architecture.
+  - rtems-gdb-stub.tex, rtems-stub.c: Disable stack-switcher
+    and REDZONE; calling functions on the target is currently
+    broken. This feature is also disabled in gdb itself
+    by the latest patches (rtems-remote target only).
+    Documented this change in manual.
+  - Removed (partly broken) gdb patch 'gdb-6.8-20080730.diff'.
+  - Added new patches for gdb-6.8 and gdb-7.0.1; they implement
+    the following fixes:
+      o disable 'push_dummy_call' ('call' command) on rtems-remote
+        target.
+      o cannot use print_section_info() to dump section info of
+        object files. This routine only dumps the main executable
+        regardless of the BFD passed in.
+        Implemented our own version (sigh).
+      o BUG (caused by cexpsh on target): if a section with
+        SEC_ALLOC set has zero size then the target agent passes
+        zero load address and this confuses gdb when it
+        loads the corresponding object as a symbol file.
+        Fixed cexp ignores such zero-sized sections completely
+        (and supplies no section symbol for them anymore).
+      o Setting 'main_name' during initialization is not good
+        enough; we now register an 'observer' callback to 
+        change 'main_name' every time a new (system) object
+        is loaded.
+      o Instead of checking the gdb target name use the configured
+        target name to decide whether we are debugging rtems and
+        should therefore not try to print the stacks of all threads
+        ('info threads' command).
+
   T.S: 2010-01-12
   - rtems-gdb-stub-m68k.c: FIXED: declaration of argument to
     _m68k_gdb_exception_handler().

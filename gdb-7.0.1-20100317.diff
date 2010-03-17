@@ -1,53 +1,131 @@
-*** gdb-6.8/gdb/rs6000-tdep.c.orig	2008-02-20 06:34:43.000000000 -0800
---- gdb-6.8/gdb/rs6000-tdep.c	2008-05-29 21:52:00.000000000 -0700
+*** gdb-7.0.1/sim/ppc/hw_disk.c.orig	2002-09-27 16:02:14.000000000 -0500
+--- gdb-7.0.1/sim/ppc/hw_disk.c	2010-03-17 08:37:56.000000000 -0600
 ***************
-*** 1402,1408 ****
-  	  continue;
-  
-  	}
-!       else if (lr_reg >= 0 &&
-  	       /* std Rx, NUM(r1) || stdu Rx, NUM(r1) */
-  	       (((op & 0xffff0000) == (lr_reg | 0xf8010000)) ||
-  		/* stw Rx, NUM(r1) */
---- 1402,1408 ----
-  	  continue;
-  
-  	}
-!       else if (lr_reg >= 0 && fdata->nosavedpc &&
-  	       /* std Rx, NUM(r1) || stdu Rx, NUM(r1) */
-  	       (((op & 0xffff0000) == (lr_reg | 0xf8010000)) ||
-  		/* stw Rx, NUM(r1) */
+*** 200,205 ****
+--- 200,212 ----
+  		hw_disk_device *disk,
+  		const char *name)
+  {
++ unsigned32 block_size;
++ 
++   if (device_find_property(me, "block-size"))
++     block_size = device_find_integer_property(me, "block-size");
++   else
++     block_size = 512;
++ 
+    if (disk->image != NULL)
+      fclose(disk->image);
+    if (disk->name != NULL)
 ***************
-*** 1458,1464 ****
-  	  continue;
+*** 210,215 ****
+--- 217,226 ----
+      perror(device_name(me));
+      device_error(me, "open %s failed\n", disk->name);
+    }
++   if (setvbuf(disk->image, malloc(block_size), _IOFBF, block_size)) {
++ 	perror(device_name(me));
++     device_error(me, "setvbuf %s failed\n", disk->name);
++   }
   
+    DTRACE(disk, ("image %s (%s)\n",
+                  disk->name,
+***************
+*** 244,252 ****
+  
+    /* is it a RO device? */
+    disk->read_only =
+!     (strcmp(device_name(me), "disk") != 0
+!      && strcmp(device_name(me), "floppy") != 0
+!      && device_find_property(me, "read-only") == NULL);
+  
+    /* now open it */
+    open_disk_image(me, disk, name);
+--- 255,263 ----
+  
+    /* is it a RO device? */
+    disk->read_only =
+!     ( (strcmp(device_name(me), "disk") != 0
+!        && strcmp(device_name(me), "floppy") != 0 )
+!      || device_find_property(me, "read-only") != NULL);
+  
+    /* now open it */
+    open_disk_image(me, disk, name);
+*** gdb-7.0.1/gdb/thread.c.orig	2009-09-13 11:28:28.000000000 -0500
+--- gdb-7.0.1/gdb/thread.c	2010-03-17 15:59:54.000000000 -0600
+***************
+*** 36,41 ****
+--- 36,43 ----
+  #include "gdb.h"
+  #include "gdb_string.h"
+  
++ #include "version.h"
++ 
+  #include <ctype.h>
+  #include <sys/types.h>
+  #include <signal.h>
+***************
+*** 782,794 ****
+  	ui_out_text (uiout, "(running)\n");
+        else
+  	{
+! 	  /* The switch below puts us at the top of the stack (leaf
+! 	     frame).  */
+! 	  switch_to_thread (tp->ptid);
+! 	  print_stack_frame (get_selected_frame (NULL),
+! 			     /* For MI output, print frame level.  */
+! 			     ui_out_is_mi_like_p (uiout),
+! 			     LOCATION);
   	}
-!       else if (op == 0x48000004)
-  	{			/* b .+4 (xlc) */
-  	  break;
   
---- 1458,1470 ----
-  	  continue;
-  
+        if (ui_out_is_mi_like_p (uiout))
+--- 784,808 ----
+  	ui_out_text (uiout, "(running)\n");
+        else
+  	{
+! 	  /* A kludge -- I don't know how we can find out whether
+! 	   * we are connected to an RTEMS target agent at run-time.
+! 	   * Hence we use the configured --target name for now.
+! 	   */
+! 	  if ( strstr(target_name, "rtems") )
+! 		{
+! 		  printf_filtered("\n");
+! 		}
+! 	  else
+! 		{
+! 		  /* The switch below puts us at the top of the stack (leaf
+! 		     frame).  */
+! 
+! 		  switch_to_thread (tp->ptid);
+! 		  print_stack_frame (get_selected_frame (NULL),
+! 				     /* For MI output, print frame level.  */
+! 				     ui_out_is_mi_like_p (uiout),
+! 				     LOCATION);
+! 		}
   	}
-!  	  else if ( (( op & 0xfe80ffff ) == 0x4280004) || (( op & 0xfe80ffff ) == 0x42800005 && lr_reg > -1 ) )
-!  	{			/* bcl .+4 used in -fpic */
-!  	
-!  	  continue;
-!  
-!  	}
-!        else if (op == 0x48000004)
-  	{			/* b .+4 (xlc) */
-  	  break;
   
-*** gdb-6.8/gdb/remote-rtems.c.orig	2008-05-29 21:52:00.000000000 -0700
---- gdb-6.8/gdb/remote-rtems.c	2008-07-29 18:16:22.000000000 -0700
+        if (ui_out_is_mi_like_p (uiout))
+*** gdb-7.0.1/gdb/Makefile.in.orig	2009-10-02 17:06:10.000000000 -0500
+--- gdb-7.0.1/gdb/Makefile.in	2010-03-17 08:38:59.000000000 -0600
+***************
+*** 662,667 ****
+--- 662,668 ----
+  	p-exp.y p-lang.c p-typeprint.c p-valprint.c parse.c printcmd.c \
+  	prologue-value.c \
+  	regcache.c reggroups.c remote.c remote-fileio.c reverse.c \
++ 	remote-rtems.c \
+  	scm-exp.c scm-lang.c scm-valprint.c \
+  	sentinel-frame.c \
+  	serial.c ser-base.c ser-unix.c \
+*** gdb-7.0.1/gdb/remote-rtems.c.orig	2010-03-17 08:37:56.000000000 -0600
+--- gdb-7.0.1/gdb/remote-rtems.c	2010-03-17 13:35:44.000000000 -0600
 ***************
 *** 0 ****
---- 1,630 ----
+--- 1,683 ----
 + 
 + #include <unistd.h>
 + #include "getopt.h"
++ #include "observer.h"
++ #include "exec.h"
 + 
 + /* configure + libiberty + glibc outsmarts itself and removes 'getopt' declaration :-( */
 + int getopt();
@@ -88,8 +166,10 @@
 + 	return 0;		/* skip zero-length section */
 + 
 +   vma  = bfd_get_section_vma (abfd, s);
++ /* XXX no 'addr' field present in GDB 7
 +   if (os)
 + 	vma += os->addr;
++  */
 +   gdb_assert ( 30 < rs->buf_size );
 +   /* FIXME: assumes lma can fit into long */
 +   sprintf (rs->buf, "qCRC:%lx,%lx", (long) vma, (long) size);
@@ -104,7 +184,9 @@
 +   getpkt (&rs->buf, &rs->buf_size, 0);
 +   if (rs->buf[0] == 'E')
 + 	error ("target memory fault, section %s, range 0x%s -- 0x%s",
-+ 	       bfd_get_section_name(abfd, s), paddr (vma), paddr (vma + size));
++ 	       bfd_get_section_name(abfd, s),
++ 	       core_addr_to_string (vma),
++ 	       core_addr_to_string (vma + size));
 +   if (rs->buf[0] != 'C')
 + 	{
 + 	  warning ("remote target does not support CRC operation - skipping...");
@@ -130,7 +212,7 @@
 + {
 + struct saa_    *sfaa = arg;
 + 
-+   sfaa->of = symbol_file_add_from_bfd (sfaa->sbfd, sfaa->ftty, sfaa->sa, 0, 0);
++   sfaa->of = symbol_file_add_from_bfd (sfaa->sbfd, sfaa->ftty, sfaa->sa, 0);
 + #if 0
 + /* This doesn't work -- on the target, the section contents
 +  * are relocated and hence differing from the ones in the
@@ -178,11 +260,12 @@
 + }
 + 
 + static char*
-+ rtems_pid_to_str (ptid_t ptid)
++ rtems_pid_to_str (struct target_ops *ops, ptid_t ptid)
 + {
 +   static char buf[30];
 + 
-+   sprintf(buf, "Thread %8x", PIDGET (ptid));
++   sprintf(buf, "Thread 0x%08x",
++ 	(unsigned)(ptid_is_pid (ptid) ? ptid_get_pid (ptid) : ptid_get_tid (ptid)));
 +   return buf;
 + }
 + 
@@ -191,7 +274,7 @@
 + extern bfd *exec_bfd;
 + 
 +   discard_remote_objfile(0);
-+   remote_open_1 (name, from_tty, &rtems_ops, 0, 0);
++   remote_open_1 (name, from_tty, &rtems_ops, 0);
 +   if ( exec_bfd )
 + 	{
 + 	  asection *s;
@@ -202,16 +285,39 @@
 + 		warning("%s: '.text' section of executable file doesn't match the target's -- do GDB and the target use the same file?", bfd_get_filename(exec_bfd));
 + 	}
 +   add_remote_objfiles(0,from_tty);
++   /* Executing stuff on the target is broken and currently not supported */
++   set_gdbarch_push_dummy_call(target_gdbarch, NULL);
 + }
 + 
 + static void rtems_files_info(struct target_ops *t)
 + {
 + struct objfile *of;
++ unsigned long   vma, sz;
++ sec_ptr         s;
 + 
 +   ALL_OBJFILES(of)
 + 	{
 + 	  if ( of->obfd )
-+ 		print_section_info(t, of->obfd);
++ 		{
++ 		  printf_filtered("%s:\n", bfd_get_filename( of->obfd ));
++ 		  if ( info_verbose )
++ 			{
++ 			  for ( s=of->obfd->sections; s; s=s->next )
++ 				{
++ 				  if (    (SEC_ALLOC & bfd_get_section_flags (of->obfd, s))
++ 				       && (sz = bfd_get_section_size( s )) > 0 )
++ 					{
++ 					  vma = (unsigned long)bfd_get_section_vma (of->obfd, s);
++ 					  printf_filtered("  0x%08lx - 0x%08lx", vma, vma + sz - 1);
++ 					}
++ 				  else
++ 					{
++ 					  puts_filtered("    -------- -   --------");
++ 					}
++ 				  printf_filtered(": %s\n", bfd_get_section_name( of->obfd, s ));
++ 				}
++ 			}
++ 		}
 + 	  else
 + 		{
 + 		  puts_filtered(of->name); puts_filtered("\n");
@@ -516,9 +622,9 @@
 + }
 + 
 + static void
-+ rtems_detach(char *args, int from_tty)
++ rtems_detach(struct target_ops *ops, char *args, int from_tty)
 + {
-+ 	remote_detach(args, from_tty);
++ 	remote_detach(ops, args, from_tty);
 + 	pop_target();
 + }
 + 
@@ -631,6 +737,18 @@
 + 	   &rtems_cmd_list);
 + }
 + 
++ static void
++ change_obj_stub(struct objfile *obj)
++ {
++   if ( obj && obj == symfile_objfile )
++   {
++ 	if ( lookup_minimal_symbol("_Thread_Handler", NULL, NULL) )
++ 	{
++ 	  set_main_name("_Thread_Handler");
++ 	}
++   }
++ }
++ 
 + 
 + static void 
 + init_rtems_ops ()
@@ -652,15 +770,20 @@
 +   rtems_ops.to_pid_to_str   	= rtems_pid_to_str;
 +   rtems_ops.to_load				= rtems_load_redirect;
 + /*  rtems_ops.to_kill			= rtems_kill; */
-+   rtems_ops.to_mourn_inferior	= rtems_mourn;
-+   rtems_ops.to_disconnect		= rtems_disconnect;
-+   rtems_ops.to_detach			= rtems_detach;
++ /*  rtems_ops.to_mourn_inferior	= rtems_mourn; */
++ /*  rtems_ops.to_disconnect		= rtems_disconnect; */
++ /* rtems_ops.to_detach			= rtems_detach; */
 +   rtems_ops.to_magic        	= OPS_MAGIC;
 + }
 + 
 + void
 + _initialize_remote_rtems (void)
 + {
++ #if 0 /* 2010/3/16 - This might be ineffective and should probably done when
++        * opening the target. Depending on the order of execution of the initializers
++        * the change made here is reverted by gdbarch initialization.
++        */
++ 
 +   /* TILL a temporary hack...; should be queried from the
 +    * target. Also, it seems that we could avoid a lot of grief
 +    * by having this for any architecture. The red-zone makes
@@ -669,46 +792,23 @@
 +    * should be straightforward to provide (unless I miss something)
 +    */
 +   set_gdbarch_frame_red_zone_size( current_gdbarch, 4096 );
-+   set_main_name("_Thread_Handler");
++ #endif
++ 
++   /* 
++    * Register a callback to override the 'main name' every time a new
++    * main executable is loaded.
++    */
++   observer_attach_new_objfile( change_obj_stub );
 + 
 +   init_rtems_ops();
 +   add_target (&rtems_ops);
 +   init_rtems_cmds ();
 + }
-*** gdb-6.8/gdb/Makefile.in.orig	2008-03-17 05:15:08.000000000 -0700
---- gdb-6.8/gdb/Makefile.in	2008-05-29 21:52:00.000000000 -0700
+*** gdb-7.0.1/gdb/remote.c.orig	2009-09-10 17:47:56.000000000 -0500
+--- gdb-7.0.1/gdb/remote.c	2010-03-17 09:41:41.000000000 -0600
 ***************
-*** 618,623 ****
---- 618,624 ----
-  	p-exp.y p-lang.c p-typeprint.c p-valprint.c parse.c printcmd.c \
-  	prologue-value.c \
-  	regcache.c reggroups.c remote.c remote-fileio.c \
-+ 	remote-rtems.c \
-  	scm-exp.c scm-lang.c scm-valprint.c \
-  	sentinel-frame.c \
-  	serial.c ser-base.c ser-unix.c \
-***************
-*** 2615,2621 ****
-  reggroups.o: reggroups.c $(defs_h) $(reggroups_h) $(gdbtypes_h) \
-  	$(gdb_assert_h) $(regcache_h) $(command_h) $(gdbcmd_h)
-  regset.o: regset.c $(defs_h) $(regset_h) $(gdb_assert_h)
-! remote.o: remote.c $(defs_h) $(gdb_string_h) $(inferior_h) $(bfd_h) \
-  	$(symfile_h) $(exceptions_h) $(target_h) $(gdbcmd_h) $(objfiles_h) \
-  	$(gdb_stabs_h) $(gdbthread_h) $(remote_h) $(regcache_h) $(value_h) \
-  	$(gdb_assert_h) $(event_loop_h) $(event_top_h) $(inf_loop_h) \
---- 2616,2622 ----
-  reggroups.o: reggroups.c $(defs_h) $(reggroups_h) $(gdbtypes_h) \
-  	$(gdb_assert_h) $(regcache_h) $(command_h) $(gdbcmd_h)
-  regset.o: regset.c $(defs_h) $(regset_h) $(gdb_assert_h)
-! remote.o: remote.c remote-rtems.c $(defs_h) $(gdb_string_h) $(inferior_h) $(bfd_h) \
-  	$(symfile_h) $(exceptions_h) $(target_h) $(gdbcmd_h) $(objfiles_h) \
-  	$(gdb_stabs_h) $(gdbthread_h) $(remote_h) $(regcache_h) $(value_h) \
-  	$(gdb_assert_h) $(event_loop_h) $(event_top_h) $(inf_loop_h) \
-*** gdb-6.8/gdb/remote.c.orig	2008-02-25 01:59:06.000000000 -0800
---- gdb-6.8/gdb/remote.c	2008-05-29 21:52:00.000000000 -0700
-***************
-*** 3890,3895 ****
---- 3890,3897 ----
+*** 4936,4941 ****
+--- 4936,4943 ----
   	fprintf_unfiltered (gdb_stdlog,
   			    "Bad register packet; fetching a new packet\n");
         getpkt (&rs->buf, &rs->buf_size, 0);
@@ -718,7 +818,7 @@
   
     buf_len = strlen (rs->buf);
 ***************
-*** 5872,5878 ****
+*** 7156,7162 ****
     if (!exec_bfd)
       error (_("command cannot be used without an exec file"));
     if (!current_target.to_shortname ||
@@ -726,7 +826,7 @@
       error (_("command can only be used with remote target"));
   
     for (s = exec_bfd->sections; s; s = s->next)
---- 5874,5880 ----
+--- 7158,7164 ----
     if (!exec_bfd)
       error (_("command cannot be used without an exec file"));
     if (!current_target.to_shortname ||
@@ -735,10 +835,10 @@
   
     for (s = exec_bfd->sections; s; s = s->next)
 ***************
-*** 7716,7718 ****
---- 7718,7727 ----
-    /* Eventually initialize fileio.  See fileio.c */
-    initialize_remote_fileio (remote_set_cmdlist, remote_show_cmdlist);
+*** 9276,9278 ****
+--- 9278,9287 ----
+    not_sent_ptid = ptid_build (42000, 1, -2);
+    any_thread_ptid = ptid_build (42000, 1, 0);
   }
 + 
 + /* need to introduce this name here ( to be
@@ -747,87 +847,45 @@
 + void
 + _initialize_remote_rtems (void);
 + #include "remote-rtems.c"
-*** gdb-6.8/gdb/thread.c.orig	2008-03-12 15:22:06.000000000 -0700
---- gdb-6.8/gdb/thread.c	2008-05-29 21:52:00.000000000 -0700
+*** gdb-7.0.1/gdb/rs6000-tdep.c.orig	2009-09-29 07:09:19.000000000 -0500
+--- gdb-7.0.1/gdb/rs6000-tdep.c	2010-03-17 08:37:56.000000000 -0600
 ***************
-*** 441,449 ****
-        if (extra_info)
-  	printf_filtered (" (%s)", extra_info);
-        puts_filtered ("  ");
-!       /* That switch put us at the top of the stack (leaf frame).  */
-!       switch_to_thread (tp->ptid);
-!       print_stack_frame (get_selected_frame (NULL), 0, LOCATION);
-      }
+*** 1647,1653 ****
+  	  continue;
   
-    /* Restores the current thread and the frame selected before
---- 441,458 ----
-        if (extra_info)
-  	printf_filtered (" (%s)", extra_info);
-        puts_filtered ("  ");
-! 
-!     if ( current_target.to_shortname &&
-!          strstr (current_target.to_shortname, "rtems-remote") )
-!       {
-! 	    printf_filtered ("\n");
-! 	  }
-! 	else
-!       {	
-!         /* That switch put us at the top of the stack (leaf frame).  */
-!         switch_to_thread (tp->ptid);
-!         print_stack_frame (get_selected_frame (NULL), 0, LOCATION);
-! 	  }
-      }
+  	}
+!       else if (lr_reg >= 0 &&
+  	       /* std Rx, NUM(r1) || stdu Rx, NUM(r1) */
+  	       (((op & 0xffff0000) == (lr_reg | 0xf8010000)) ||
+  		/* stw Rx, NUM(r1) */
+--- 1647,1653 ----
+  	  continue;
   
-    /* Restores the current thread and the frame selected before
-*** gdb-6.8/sim/ppc/hw_disk.c.orig	2002-09-27 14:02:14.000000000 -0700
---- gdb-6.8/sim/ppc/hw_disk.c	2008-05-29 21:52:00.000000000 -0700
+  	}
+!       else if (lr_reg >= 0 && fdata->nosavedpc &&
+  	       /* std Rx, NUM(r1) || stdu Rx, NUM(r1) */
+  	       (((op & 0xffff0000) == (lr_reg | 0xf8010000)) ||
+  		/* stw Rx, NUM(r1) */
 ***************
-*** 200,205 ****
---- 200,212 ----
-  		hw_disk_device *disk,
-  		const char *name)
-  {
-+ unsigned32 block_size;
-+ 
-+   if (device_find_property(me, "block-size"))
-+     block_size = device_find_integer_property(me, "block-size");
-+   else
-+     block_size = 512;
-+ 
-    if (disk->image != NULL)
-      fclose(disk->image);
-    if (disk->name != NULL)
-***************
-*** 210,215 ****
---- 217,226 ----
-      perror(device_name(me));
-      device_error(me, "open %s failed\n", disk->name);
-    }
-+   if (setvbuf(disk->image, malloc(block_size), _IOFBF, block_size)) {
-+ 	perror(device_name(me));
-+     device_error(me, "setvbuf %s failed\n", disk->name);
-+   }
+*** 1704,1710 ****
+  	  continue;
   
-    DTRACE(disk, ("image %s (%s)\n",
-                  disk->name,
-***************
-*** 244,252 ****
+  	}
+!       else if (op == 0x48000004)
+  	{			/* b .+4 (xlc) */
+  	  break;
   
-    /* is it a RO device? */
-    disk->read_only =
-!     (strcmp(device_name(me), "disk") != 0
-!      && strcmp(device_name(me), "floppy") != 0
-!      && device_find_property(me, "read-only") == NULL);
+--- 1704,1716 ----
+  	  continue;
   
-    /* now open it */
-    open_disk_image(me, disk, name);
---- 255,263 ----
+  	}
+!  	  else if ( (( op & 0xfe80ffff ) == 0x4280004) || (( op & 0xfe80ffff ) == 0x42800005 && lr_reg > -1 ) )
+!  	{			/* bcl .+4 used in -fpic */
+!  	
+!  	  continue;
+!  
+!  	}
+!        else if (op == 0x48000004)
+  	{			/* b .+4 (xlc) */
+  	  break;
   
-    /* is it a RO device? */
-    disk->read_only =
-!     ( (strcmp(device_name(me), "disk") != 0
-!        && strcmp(device_name(me), "floppy") != 0 )
-!      || device_find_property(me, "read-only") != NULL);
-  
-    /* now open it */
-    open_disk_image(me, disk, name);
