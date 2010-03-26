@@ -281,6 +281,90 @@ don't know if this is the recommended way, though. YMMV.
 	variable must contain the directory where the target can
 	locate the object that is to be loaded.
 
+\subsubsection{Locating Source Files}
+    In addition to locating object files GDB also needs to be able
+	to find the source files that were compiled into the objects.
+	The {\tt -g} flag also instructs the compiler to embed the location
+	of the source and header files into the object.
+	This location is stored as an absolute path to the directory
+	where the source was compiled and a relative path from the
+    compilation directory to the source file.
+
+	\noindent
+	Two common problems prevent GDB from finding source files:
+\begin{description}
+	\item[Removal of temporary build directories]\hfill\\
+	Some software packages -- most notably packages that
+	use {\em GNU configure} -- build objects outside
+    of the source directory tree. E.g., a source may be
+    located in
+\begin{verbatim}
+   /topdir/src/foo.c
+\end{verbatim}
+    but be built in
+\begin{verbatim}
+   /topdir/buildtmp/foo.o
+\end{verbatim}
+    and the final product eventually installed in
+\begin{verbatim}
+   /topdir/lib/libfoo.a
+\end{verbatim}
+
+	The {\tt foo.o} object contained in {\tt libfoo.a}
+	embeds the location of {\tt foo.c} as {\tt /topdir/buildtmp/../src/foo.c}.	
+	Hence, the temporary build directory hierarchy ({\tt buildtmp}
+	in our example) {\em must not be removed} in an attempt to clean
+	up after building.
+	Otherwise, GDB will not be able to traverse the embedded path and
+	locate the {\tt foo.c} source file.
+	\item[Relocation of source and build tree]\hfill\\
+	In some cases the source (and build) directories are
+	relocated. E.g., we may (without recompiling) choose to move
+	the entire hierarchy from {\tt /topdir} to some other
+	directory {\tt /newtopdir}:
+\begin{verbatim}
+	/newtopdir/src/foo.c
+	/newtopdir/buildtmp/foo.o
+	/newtopdir/lib/libfoo.a
+\end{verbatim}
+	In this case also will GDB fail to locate the source file since
+	the embedded path {\tt /topdir/buildtmp/../src/foo.c}
+	is no longer correct.
+
+	Fortunately, GDB has built-in support for such a situation:
+	the ``{\em substitute-path}'' feature. Using the command
+\begin{verbatim}
+	(gdb) set substitute-path <from> <to>
+\end{verbatim}
+	lets GDB substitute one path prefix by another one when
+	looking up source files. In our example we would say
+\begin{verbatim}
+	(gdb) set substitute-path /topdir /newtopdir
+\end{verbatim}
+
+	Multiple such substitution rules may be set
+	(use the command {\tt apropos substitute-path} to get brief help).
+
+	It is important to understand that the substitution rules
+	must be in effect when reading executables or object files.
+	A rule that is set only after files have been read has
+	no effect.
+
+	Hence, you must issue the {\tt file <main\_executable>}
+	command to (re-)read the main executable after setting
+	substitution rules (in particular if the main executable
+	was specified on the GDB command line).
+
+	Additional objects that are run-time loaded on the target
+	are read into GDB when it connects to the target. Therefore,
+	substitution rules should be set prior to starting
+	a connection ({\tt target rtems-remote} command).
+	However, you can also use the command {\tt rtems sync-objs}
+	to let GDB re-read and synchronize object files (but
+	note that the main executable is not re-read by this
+	command).
+\end{description}
+
 \subsection{Starting the Debugging Agent}
 	On the target, the debugging agent must be running.
 	It needs to be linked into the system and is started
@@ -477,6 +561,10 @@ a list of loaded objects and their section addresses.
 	  with what's current on the target. Use this command if you
 	  added, removed or re-loaded modules from the Cexp$>$ prompt
 	  instead of using \cmd{rtems load} from inside GDB.
+
+	  This command can also be used to reload objects after
+	  new substitution rules ({\tt set substitute-path}) have
+      been added.
 
 \item
 \cmd{info threads} semantics have slightly changed. Only a list

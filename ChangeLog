@@ -1,4 +1,10 @@
 Changes since release 1.5:
+  T.S: 2010-03-25
+  - added patch for gdb-7.1: gdb-7.1-20100325.diff
+  - added subsection to documentation discussing problems
+    with GDB failing to locate source files (deleted temporary
+    build dirs, relocated src/build dirs, GDB's 'substitute-path'
+    feature.
   T.S: 2010-03-17
   - rtems-gdb-stub-m68k.c: REVERTED: declaration of argument
     to _m68k_gdb_exception_handler() and used the same way
