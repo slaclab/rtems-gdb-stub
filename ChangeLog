@@ -1,4 +1,11 @@
 Changes since release 1.5:
+  T.S: 2010-06-30
+  - rtems-gdb-stub-m68k.c: Changed declaration of low-level
+    exception handler to take a 'char' arg instead of 'int'
+    in order to silence compiler warning (rtems-4.10) that
+    we had violated the alias rule (which we really did).
+  - rtems-stub.c: Silenced compiler warning (rtems-4.10) by
+    including <unistd.h>.
   T.S: 2010-03-25
   - added patch for gdb-7.1: gdb-7.1-20100325.diff
   - added subsection to documentation discussing problems

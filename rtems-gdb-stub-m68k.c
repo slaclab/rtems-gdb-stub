@@ -303,8 +303,9 @@ int i;
  * unwraps it and passes control - not back to the thread - but to our 'cleanup'
  * AKA 'top-half' routine.
  */
+
 void
-_m68k_gdb_exception_handler(int arg)
+_m68k_gdb_exception_handler(char arg)
 {
 M68k_ExceptionFrame frame = (M68k_ExceptionFrame)&arg;
 uint32_t            *p = frame->usr_stack;
@@ -454,7 +455,7 @@ int rtems_gdb_m68k_freeze_resume=0;
 
 /* top-half exception handler (itself wrapped by assembly code) */
 void
-_m68k_gdb_ret_to_thread(int arg)
+_m68k_gdb_ret_to_thread(char arg)
 {
 M68k_GdbFrame r = (M68k_GdbFrame)&arg;
 
