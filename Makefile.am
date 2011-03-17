@@ -49,6 +49,8 @@ rtems_gdb_stub_LINK=$(OBJLINK)
 
 PDFS=rtems-gdb-stub.pdf
 
+EXTRA_DIST=$(PDFS)
+
 pdf-local: rtems-gdb-stub.pdf
 
 rtems-gdb-stub.pdf: rtems-gdb-stub.tex
