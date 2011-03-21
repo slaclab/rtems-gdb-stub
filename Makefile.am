@@ -50,6 +50,7 @@ rtems_gdb_stub_LINK=$(OBJLINK)
 PDFS=rtems-gdb-stub.pdf
 
 EXTRA_DIST=$(PDFS)
+EXTRA_DIST+=$(wildcard $(srcdir)/gdb-*.diff)
 
 pdf-local: rtems-gdb-stub.pdf
 
