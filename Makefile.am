@@ -51,6 +51,9 @@ PDFS=rtems-gdb-stub.pdf
 
 EXTRA_DIST=$(PDFS)
 EXTRA_DIST+=$(wildcard $(srcdir)/gdb-*.diff)
+EXTRA_DIST+=rtems-gdb-stub.tex
+EXTRA_DIST+=LICENSE
+EXTRA_DIST+=Makefile
 
 pdf-local: rtems-gdb-stub.pdf
 
