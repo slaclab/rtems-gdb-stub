@@ -1,4 +1,6 @@
 Changes since release 1.5:
+  T.S: 2011-08-05
+  - added patch gdb-7.2-20110805.diff
   T.S: 2011-08-04
   - Makefile.am: add rtems-gdb-stub.tex, LICENSE and legacy
     Makefile to EXTRA_DIST.
