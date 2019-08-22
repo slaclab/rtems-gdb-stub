@@ -929,7 +929,7 @@ rtems_gdb_daemon (rtems_task_argument arg)
 		goto cleanup;
   }
 
-  INFMSG("GDB daemon (Release $Name$): starting up\n\n");
+  INFMSG("GDB daemon (Release %s): starting up\n\n", PACKAGE_VERSION);
 #ifndef USE_GDB_REDZONE
   INFMSG("Using stack switcher; **must not use the stack checker**\n");
 #endif
