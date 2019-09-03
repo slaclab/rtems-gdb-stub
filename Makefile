@@ -81,6 +81,7 @@ DEFINES  += -DHAVE_CEXP
 CPPFLAGS += -I$(CEXP_SOURCE_PATH)
 HCHECK    = $(CEXP_SOURCE_PATH)/cexpmodP.h
 endif
+DEFINES  += -DPACKAGE_VERSION=$(shell git describe --always --dirty)
 
 CFLAGS   +=
 
@@ -188,7 +189,7 @@ $(RTEMS_SITE_DOCDIR)/html/rtems-gdb-stub/index.html: rtems-gdb-stub.tex
 html/index.html: rtems-gdb-stub.tex
 	$(make-html)
 
-REVISION=$(filter-out $$%,$$Name$$)
+REVISION=$(shell git describe --always --dirty)
 
 tar: doc html/index.html
 	@$(make-tar)
